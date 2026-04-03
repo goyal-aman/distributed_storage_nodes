@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
+	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
 const (
@@ -81,15 +83,20 @@ func (c *Cluster) AddNode(node StorageNode) error {
 
 	endOfKeyRange := node.EndOfKeyRange
 
-	index, err := NextNode(c.nodes, endOfKeyRange)
-	if err != nil {
-		return fmt.Errorf("err in addNode", err)
-	}
-
+	originalArr := c.nodes
 	// this is the first node
-	if index == 0 && len(c.nodes) == 0 {
+	if len(c.nodes) == 0 {
+		if node.EndOfKeyRange != Total_Slots {
+			return fmt.Errorf("the first node in the cluster must be has EndOfKeyRange with max value")
+		}
 		c.nodes = append(c.nodes, node)
 	} else {
+		index, err := NextNode(c.nodes, endOfKeyRange)
+		if err != nil {
+			slog.Error("err in finding nextnode", "err", err, "index", index)
+			return fmt.Errorf("err in addNode", err)
+		}
+
 		// now that we have index, lets start replication process
 		oldNode := c.nodes[index]
 		slog.Info("next node found", "endOfKeyRange", endOfKeyRange, "nextNode", oldNode)
@@ -101,12 +108,13 @@ func (c *Cluster) AddNode(node StorageNode) error {
 		// start replication
 		replication(node, oldNode)
 	}
+	slog.Info("add node", "original_arr", originalArr, "new_arr", c.nodes)
 
-	// after node is added to nodes, update the 'node' with 'id'
-	return initNode(node)
+	return nil
 
 }
-func initNode(node StorageNode) error {
+
+func (c *Cluster) InitNode(node StorageNode) error {
 
 	bytesReader := helper.ToBytesReader(map[string]interface{}{
 		"Id":            node.Id,
@@ -121,8 +129,40 @@ func initNode(node StorageNode) error {
 
 	respBytes := make([]byte, 0)
 	resp.Body.Read(respBytes)
-	slog.Info("init node success", "Id", node.Id, "Host", node.Host, "EndOfKeyRange", node.EndOfKeyRange, "resp_body", string(respBytes), "resp_status", resp.StatusCode)
+	slog.Info("init node success", "Id", node.Id, "Host", node.Host, "EndOfKeyRange", node.EndOfKeyRange, "resp_body", string(respBytes), "resp_status", resp.StatusCode, err)
 	return nil
+}
+
+// BroadCastNode
+// informs all known nodes that new node is now available
+func (c *Cluster) BroadCastNode(newNode StorageNode) {
+	allNodes := c.nodes
+	for _, node := range allNodes {
+		sendGossip(newNode, node)
+	}
+}
+
+func sendGossip(newNode, oldNode StorageNode) {
+	updateGossipEndpoint := "/v1/gossip"
+	payload := []types.Gossip{
+		{
+			Id:            newNode.Id,
+			Host:          newNode.Host,
+			EndOfKeyRange: newNode.EndOfKeyRange,
+			LastUpdate:    time.Now(),
+		},
+	}
+
+	resp, err := http.Post(oldNode.Host+updateGossipEndpoint, "application/json", helper.ToBytesReader(payload))
+	if err != nil {
+		slog.Error("err when sendGossip", "oldHost", oldNode.Host, "newHost", newNode.Host, err)
+		// return fmt.Errorf("err occured while send init node", err)
+		return
+	}
+
+	respBytes := make([]byte, 0)
+	resp.Body.Read(respBytes)
+	slog.Info("send node success")
 }
 
 func replication(dNode, sNode StorageNode) {

@@ -124,9 +124,16 @@ func addnode(c *gin.Context) {
 		EndOfKeyRange: endOfKeyRange,
 	}
 
-	resp := cluster.AddNode(node)
+	err := cluster.AddNode(node)
+	if err != nil {
+		slog.Error("err in adding node", "err", err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	cluster.InitNode(node)
+	cluster.BroadCastNode(node)
 
-	c.JSON(http.StatusOK, gin.H{"message": resp})
+	c.JSON(http.StatusOK, gin.H{"message": "OK"})
 }
 
 func handleGet(c *gin.Context) {
