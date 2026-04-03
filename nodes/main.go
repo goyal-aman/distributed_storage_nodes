@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,11 +13,17 @@ var (
 	storage = map[string]interface{}{}
 )
 
-const (
-	PORT = "7777"
+var (
+	fPORT = flag.Int("port", 7770, "port of application, default is 7770")
 )
 
+func init() {
+	flag.Parse()
+}
+
 func main() {
+	PORT := *fPORT
+
 	router := gin.Default()
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -28,7 +35,7 @@ func main() {
 	routerv1.POST("", handlePost)
 	routerv1.GET("", handleGet)
 
-	if err := router.Run(fmt.Sprintf("0.0.0.0:%s", PORT)); err == nil {
+	if err := router.Run(fmt.Sprintf("0.0.0.0:%d", PORT)); err == nil {
 		slog.Info("listening on", "port", PORT)
 	}
 }
