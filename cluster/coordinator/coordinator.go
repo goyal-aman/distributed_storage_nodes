@@ -1,14 +1,11 @@
 package coordinator
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 )
 
 const (
@@ -100,22 +97,22 @@ func (c *Cluster) AddNode(node StorageNode) error {
 }
 
 func replication(dNode, sNode StorageNode) {
-	host := sNode.Host
-	payload := map[string]interface{}{
-		"destination":     dNode.Host,
-		"destinationEOKR": dNode.EndOfKeyRange,
-	}
-	jsonData, _ := json.Marshal(payload)
-	resp, err := http.Post(host+"/replication", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		panic(err)
-	}
+	// host := sNode.Host
+	// payload := map[string]interface{}{
+	// 	"destination":     dNode.Host,
+	// 	"destinationEOKR": dNode.EndOfKeyRange,
+	// }
+	// jsonData, _ := json.Marshal(payload)
+	// resp, err := http.Post(host+"/replication", "application/json", bytes.NewBuffer(jsonData))
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	respBodyBytes := make([]byte, 0)
-	resp.Body.Read(respBodyBytes)
-	defer resp.Body.Close()
+	// respBodyBytes := make([]byte, 0)
+	// resp.Body.Read(respBodyBytes)
+	// defer resp.Body.Close()
 
-	slog.Info("replication resp", "resp", string(respBodyBytes))
+	// slog.Info("replication resp", "resp", string(respBodyBytes))
 }
 
 func (c *Cluster) GetNode(key uint64) (*StorageNode, error) {
