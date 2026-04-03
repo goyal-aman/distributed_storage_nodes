@@ -6,10 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+
+	"github.com/goyal-aman/distributed-storage-nodes/helper"
 )
 
 const (
 	Total_Slots = uint64((1 << 64) - 1)
+)
+
+const (
+	initNodeEndPoint = "/v1/node/init"
 )
 
 var (
@@ -19,6 +26,8 @@ var (
 )
 
 type StorageNode struct {
+	Id string
+
 	// EndOfKeyRange is the first last key in the keyrange node is responsible for
 	EndOfKeyRange uint64
 
@@ -39,14 +48,10 @@ type Cluster struct {
 }
 
 // NewCluster creates a cluster coordinator
-// new cluster comes with one node out of the node which covers all the keyranges
 func NewCluster(host string) *Cluster {
 
-	// this is the only node that is present in the cluster.
-	// this node covers all key ranges.
-	node := StorageNode{EndOfKeyRange: Total_Slots, Host: host}
 	return &Cluster{
-		nodes:      []StorageNode{node},
+		nodes:      []StorageNode{},
 		totalSlots: Total_Slots,
 	}
 }
@@ -81,18 +86,42 @@ func (c *Cluster) AddNode(node StorageNode) error {
 		return fmt.Errorf("err in addNode", err)
 	}
 
-	// now that we have index, lets start replication process
-	oldNode := c.nodes[index]
-	slog.Info("next node found", "endOfKeyRange", endOfKeyRange, "nextNode", oldNode)
+	// this is the first node
+	if index == 0 && len(c.nodes) == 0 {
+		c.nodes = append(c.nodes, node)
+	} else {
+		// now that we have index, lets start replication process
+		oldNode := c.nodes[index]
+		slog.Info("next node found", "endOfKeyRange", endOfKeyRange, "nextNode", oldNode)
 
-	c.nodes = append(c.nodes, StorageNode{})
-	copy(c.nodes[index+1:], c.nodes[index:])
-	c.nodes[index] = node
+		c.nodes = append(c.nodes, StorageNode{})
+		copy(c.nodes[index+1:], c.nodes[index:])
+		c.nodes[index] = node
 
-	// start replication
+		// start replication
+		replication(node, oldNode)
+	}
 
-	replication(node, oldNode)
+	// after node is added to nodes, update the 'node' with 'id'
+	return initNode(node)
 
+}
+func initNode(node StorageNode) error {
+
+	bytesReader := helper.ToBytesReader(map[string]interface{}{
+		"Id":            node.Id,
+		"Host":          node.Host,
+		"EndOfKeyRange": node.EndOfKeyRange,
+	})
+	resp, err := http.Post(node.Host+initNodeEndPoint, "application/json", bytesReader)
+	if err != nil {
+		slog.Error("err when init node", "Id", node.Id, "Host", node.Host, "EndOfKeyRange", node.EndOfKeyRange)
+		return fmt.Errorf("err occured while send init node", err)
+	}
+
+	respBytes := make([]byte, 0)
+	resp.Body.Read(respBytes)
+	slog.Info("init node success", "Id", node.Id, "Host", node.Host, "EndOfKeyRange", node.EndOfKeyRange, "resp_body", string(respBytes), "resp_status", resp.StatusCode)
 	return nil
 }
 

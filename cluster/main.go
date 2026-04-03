@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
 )
 
@@ -58,6 +59,8 @@ func main() {
 	}
 }
 
+// nodedetail
+// return the details which should own the 'key'
 func nodedetail(c *gin.Context) {
 	key := c.Query("key")
 	hash := coordinator.HashKey(key)
@@ -100,6 +103,7 @@ func removenode(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"error": err})
 
 }
+
 func addnode(c *gin.Context) {
 	body := map[string]interface{}{}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -111,9 +115,11 @@ func addnode(c *gin.Context) {
 
 	slog.Info("addnode", "body", body)
 
+	idStr := uuid.New().String()
 	hostStr := body["Host"].(string)
 	endOfKeyRange := uint64(body["EndOfKeyRange"].(float64)) //.(uint64)
 	node := coordinator.StorageNode{
+		Id:            idStr,
 		Host:          hostStr,
 		EndOfKeyRange: endOfKeyRange,
 	}
