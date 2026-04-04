@@ -2,15 +2,24 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/goyal-aman/distributed-storage-nodes/err"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
+)
+
+const (
+	Total_Slots = uint64((1 << 64) - 1)
 )
 
 var (
@@ -27,6 +36,7 @@ var (
 
 var (
 	updateGossipEndpoint = "/v1/gossip"
+	nodeDataEndpoint     = "/v1/data"
 )
 
 func init() {
@@ -40,6 +50,10 @@ type Node struct {
 	Host          string
 	EndOfKeyRange uint64
 	Gossip        map[string]types.Gossip
+}
+
+func (n Node) XEndOfKeyRange() uint64 {
+	return n.EndOfKeyRange
 }
 
 func NewNode() *Node {
@@ -145,7 +159,7 @@ func (n *Node) BroadcastGossip(broadCaseTime time.Time) {
 		slog.Debug("Sending gossips", "from", *fPORT, "to", g.Host, "data", gossips)
 		sendGossip(g.Host, helper.ToBytesReader(gossips))
 	}
-	slog.Info("Broadcast success")
+	slog.Debug("Broadcast success")
 
 }
 
@@ -159,7 +173,7 @@ func sendGossip(destHost string, bytesReader *bytes.Reader) {
 
 	respBytes := make([]byte, 0)
 	resp.Body.Read(respBytes)
-	slog.Info("send gossip success", "destHost", destHost, "status", resp.StatusCode, "resp_body", string(respBytes))
+	slog.Debug("send gossip success", "destHost", destHost, "status", resp.StatusCode, "resp_body", string(respBytes))
 
 }
 
@@ -212,6 +226,14 @@ func logIDAndTime(g []types.Gossip) map[string]time.Time {
 
 }
 
+func mapToArr[K comparable, V any](m map[K]V) []V {
+	arr := []V{}
+	for _, val := range m {
+		arr = append(arr, val)
+	}
+	return arr
+}
+
 func maxTime(t1, t2 time.Time) time.Time {
 	if t1.After(t2) {
 		slog.Debug("maxTime", "winner", t1, "a", t1, "b", t2)
@@ -230,13 +252,127 @@ func (n *Node) handlePost(c *gin.Context) {
 		})
 	}
 
+	ar := mapToArr(n.Gossip)
+	sort.Slice(ar, func(a, b int) bool {
+		// increasing order in EndOfKeyRange
+		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
+	})
+
+	key := body["key"].(string)
+	value := body["value"]
+
+	token := helper.HashKey(key, Total_Slots)
+	ownerNode, err := helper.GetNode(ar, token)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// is someother node own the key
+	// get data from it
+	if ownerNode.Id != n.Id {
+		if rerr := n.redirectPostKeyValue(*ownerNode, key, value); rerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": rerr.Error(),
+			})
+		} else {
+			c.JSON(http.StatusOK, gin.H{
+				"message": "OK",
+				"metadata": map[string]string{
+					"redirected":  "true",
+					"serviced_by": n.Id,
+					"owned_by":    ownerNode.Id,
+				},
+			})
+		}
+		return
+	}
+
 	slog.Info("handle post", "body", body)
-	storage[body["key"].(string)] = body["value"]
-	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+	storage[key] = value
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "ok",
+		"owner_node": ownerNode.Id,
+	})
+}
+
+func (n *Node) redirectPostKeyValue(node types.Gossip, key string, value any) error {
+	payload := map[string]interface{}{
+		"key":   key,
+		"value": value,
+	}
+
+	resp, perr := http.Post(node.Host+nodeDataEndpoint, "application/json", helper.ToBytesReader(payload))
+	if perr != nil {
+		slog.Error("err redirect post key value", "dest_host", node.Host, "source_host", n.Host, perr)
+		// return fmt.Errorf("err occured while send init node", err)
+		return errors.Join(err.ErrRedirectPostKeyValue, perr)
+	}
+
+	respBytes := make([]byte, 0)
+	resp.Body.Read(respBytes)
+	slog.Info("send node success")
+	return nil
 }
 
 func (n *Node) handleGet(c *gin.Context) {
 	key := c.Query("key")
 	slog.Info("handle get", "key", key)
+
+	ar := mapToArr(n.Gossip)
+	sort.Slice(ar, func(a, b int) bool {
+		// increasing order in EndOfKeyRange
+		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
+	})
+
+	token := helper.HashKey(key, Total_Slots)
+	ownerNode, err := helper.GetNode(ar, token)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// is someother node own the key
+	// get data from it
+	if ownerNode.Id != n.Id {
+		respBody, rerr := n.redirectGetKeyValue(*ownerNode, key)
+		if rerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": rerr.Error(),
+			})
+		} else {
+			respBody["metadata"] = map[string]string{
+				"redirected":  "true",
+				"serviced_by": n.Id,
+				"owned_by":    ownerNode.Id,
+			}
+
+			c.JSON(http.StatusOK, respBody)
+		}
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "ok", "value": storage[key]})
+}
+
+func (n *Node) redirectGetKeyValue(node types.Gossip, key string) (map[string]interface{}, error) {
+
+	resp, perr := http.Get(node.Host + nodeDataEndpoint + fmt.Sprintf("?key=%s", key))
+	if perr != nil {
+		slog.Error("err redirect get key value", "dest_host", node.Host, "source_host", n.Host, perr)
+		return nil, errors.Join(err.ErrRedirectGetKeyValue, perr)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]interface{}{}
+	json.Unmarshal(respBytes, &body)
+	return body, nil
 }

@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
+	"github.com/goyal-aman/distributed-storage-nodes/helper"
+	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
 var (
@@ -63,7 +65,7 @@ func main() {
 // return the details which should own the 'key'
 func nodedetail(c *gin.Context) {
 	key := c.Query("key")
-	hash := coordinator.HashKey(key)
+	hash := helper.HashKey(key, coordinator.Total_Slots)
 
 	// find node which handles this hash range
 	node, err := cluster.GetNode(hash)
@@ -93,7 +95,7 @@ func removenode(c *gin.Context) {
 
 	hostStr := body["Host"].(string)
 	endOfKeyRange := uint64(body["EndOfKeyRange"].(float64)) //.(uint64)
-	node := coordinator.StorageNode{
+	node := types.StorageNode{
 		Host:          hostStr,
 		EndOfKeyRange: endOfKeyRange,
 	}
@@ -118,7 +120,7 @@ func addnode(c *gin.Context) {
 	idStr := uuid.New().String()
 	hostStr := body["Host"].(string)
 	endOfKeyRange := uint64(body["EndOfKeyRange"].(float64)) //.(uint64)
-	node := coordinator.StorageNode{
+	node := types.StorageNode{
 		Id:            idStr,
 		Host:          hostStr,
 		EndOfKeyRange: endOfKeyRange,

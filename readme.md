@@ -16,3 +16,4 @@ Go is used, because I am familiar with it and nice developer experience.
 2. Each storage node handles subset of data based on key range.
 3. Cluster is collection of storage node, with atleast 1 storage node.
 4. Communication happens using REST over HTTP. For the purpose of this project REST is sufficient.
+5. We can remove the concept of cluster or coordinator node entirely, and when an node starts we can supply the seed node which can act as cluster node.

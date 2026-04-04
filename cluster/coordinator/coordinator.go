@@ -1,14 +1,13 @@
 package coordinator
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/goyal-aman/distributed-storage-nodes/err"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
@@ -23,29 +22,14 @@ const (
 )
 
 var (
-	ErrNodeAlrExistWithEndOfKeyRange   = errors.New("node already exist for endOfKeyRange")
-	ErrNoNodeWithRequiredEndOfKeyRange = errors.New("no node in storage nodes has key < node.endOfKeyRange")
-	ErrNodeNotFound                    = errors.New("node not found")
+	ErrNodeAlrExistWithEndOfKeyRange = errors.New("node already exist for endOfKeyRange")
+	ErrNodeNotFound                  = errors.New("node not found")
 )
-
-type StorageNode struct {
-	Id string
-
-	// EndOfKeyRange is the first last key in the keyrange node is responsible for
-	EndOfKeyRange uint64
-
-	// Host is ip:port
-	Host string
-}
-
-func (s *StorageNode) String() string {
-	return fmt.Sprintf("{endOfKeyRange:%d, status:%s}", s.EndOfKeyRange, "unknown")
-}
 
 type Cluster struct {
 	// nodes: represent all the storage nodes that are in the
 	// system in asc order of node.endOfKeyRange
-	nodes []StorageNode
+	nodes []types.StorageNode
 
 	totalSlots uint64
 }
@@ -54,20 +38,13 @@ type Cluster struct {
 func NewCluster(host string) *Cluster {
 
 	return &Cluster{
-		nodes:      []StorageNode{},
+		nodes:      []types.StorageNode{},
 		totalSlots: Total_Slots,
 	}
 }
 
-func (c *Cluster) Info() []StorageNode {
+func (c *Cluster) Info() []types.StorageNode {
 	return c.nodes
-}
-
-func HashKey(key string) uint64 {
-	// this returns 256 bit number
-	// for our usecase we only care about 64 bits
-	sum := sha256.Sum256([]byte(key))
-	return binary.BigEndian.Uint64(sum[:8]) % Total_Slots
 }
 
 // AddNode
@@ -77,7 +54,7 @@ func HashKey(key string) uint64 {
 // while the data is being replicated, it doesn't serve traffic.
 // while the data is being replicated, any real time writes to data being replicated is also handled
 // once all the backlog of data in replicated successfully, it takes over and starts to serve the traffic.
-func (c *Cluster) AddNode(node StorageNode) error {
+func (c *Cluster) AddNode(node types.StorageNode) error {
 	/*
 		addNode adds ndoe to coordinator.nodes
 	*/
@@ -102,7 +79,7 @@ func (c *Cluster) AddNode(node StorageNode) error {
 		oldNode := c.nodes[index]
 		slog.Info("next node found", "endOfKeyRange", endOfKeyRange, "nextNode", oldNode)
 
-		c.nodes = append(c.nodes, StorageNode{})
+		c.nodes = append(c.nodes, types.StorageNode{})
 		copy(c.nodes[index+1:], c.nodes[index:])
 		c.nodes[index] = node
 
@@ -115,7 +92,7 @@ func (c *Cluster) AddNode(node StorageNode) error {
 
 }
 
-func (c *Cluster) InitNode(node StorageNode) error {
+func (c *Cluster) InitNode(node types.StorageNode) error {
 
 	bytesReader := helper.ToBytesReader(map[string]interface{}{
 		"Id":            node.Id,
@@ -136,14 +113,14 @@ func (c *Cluster) InitNode(node StorageNode) error {
 
 // BroadCastNode
 // informs all known nodes that new node is now available
-func (c *Cluster) BroadCastNode(newNode StorageNode) {
+func (c *Cluster) BroadCastNode(newNode types.StorageNode) {
 	allNodes := c.nodes
 	for _, node := range allNodes {
 		sendGossip(newNode, node)
 	}
 }
 
-func sendGossip(newNode, oldNode StorageNode) {
+func sendGossip(newNode, oldNode types.StorageNode) {
 
 	payload := []types.Gossip{
 		{
@@ -166,7 +143,7 @@ func sendGossip(newNode, oldNode StorageNode) {
 	slog.Info("send node success")
 }
 
-func replication(dNode, sNode StorageNode) {
+func replication(dNode, sNode types.StorageNode) {
 	// host := sNode.Host
 	// payload := map[string]interface{}{
 	// 	"destination":     dNode.Host,
@@ -185,19 +162,14 @@ func replication(dNode, sNode StorageNode) {
 	// slog.Info("replication resp", "resp", string(respBodyBytes))
 }
 
-func (c *Cluster) GetNode(key uint64) (*StorageNode, error) {
-	for _, node := range c.nodes {
-		if key < node.EndOfKeyRange {
-			return &node, nil
-		}
-	}
-	return nil, ErrNoNodeWithRequiredEndOfKeyRange
+func (c *Cluster) GetNode(key uint64) (*types.StorageNode, error) {
+	return helper.GetNode(c.nodes, key)
 }
 
 // NextNode find the index in the array where 'key' should be inserted such that
 // array remains sorted in increasing order on node.endOfKeyRange
 // which means left most node such that key < node.endOfKeyRange
-func NextNode(nodes []StorageNode, val uint64) (int, error) {
+func NextNode(nodes []types.StorageNode, val uint64) (int, error) {
 	if len(nodes) == 0 {
 		return 0, nil
 	}
@@ -211,10 +183,10 @@ func NextNode(nodes []StorageNode, val uint64) (int, error) {
 	}
 	// given that node.endOfKeyRange talks about the last key in keyrange the node handles.
 	// there must be atleast one node in array which must satisfy condition key < node.endOfKeyRange
-	return 0, ErrNoNodeWithRequiredEndOfKeyRange
+	return 0, err.ErrNoNodeWithRequiredEndOfKeyRange
 }
 
-func (c *Cluster) RemoveNode(node StorageNode) error {
+func (c *Cluster) RemoveNode(node types.StorageNode) error {
 	var index = -1
 	for i, cnode := range c.nodes {
 		if cnode.EndOfKeyRange == node.EndOfKeyRange && cnode.Host == node.Host {

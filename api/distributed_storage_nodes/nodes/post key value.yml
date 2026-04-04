@@ -5,7 +5,7 @@ info:
 
 http:
   method: POST
-  url: http://localhost:7777/v1/
+  url: http://localhost:7771/v1/data
   body:
     type: json
     data: |-
