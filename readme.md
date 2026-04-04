@@ -20,7 +20,7 @@ Go is used, because I am familiar with it and nice developer experience.
 5. We can remove the concept of cluster or coordinator node entirely, and when an node starts we can supply the seed node which can act as cluster node.
 
 
-# Updates
+# Adding Gossip & Enabling nodes to handle all traffic
 In my attempt to create distributed storage nodes in order to learn a lot of principles of distributed systems and cassandra. I have gotten this far - I've storage nodes and a coordinator nodes.
 
 coordinator node is also called cluster. 
@@ -36,3 +36,10 @@ anytime a node recieves get or post traffic, it checks whether it owns the key, 
 all nodes also gossip on fixed interval letting all known nodes with its own updated timestamp. there fore each node maintains withit all known nodes and their lastKnown update timestamp in cluster (gossip protocol)
 
 
+# Removing Cluslter Abstraction
+1. At present, new node is needed to be added into the cluster manually. When new node is added into cluster using /addnode endpoint, cluster informs all other nodes in the cluster about new node using /upategossip endpoint. Then the nodes take over the responsibility to informing other nodes about their health status using gossip protocol. 
+2. Now that I've had more time to think about design and implementation; need of cluster seems unnecessary. I am thinking when new node start up, it can be supplied seed node, that is, the details of existing nodes. New node then can communicate with supplied nodes to get more detailed picture of the cluster.
+3. Also, at present when new node is created, the node gets to decide its EndOfKeyRange property. After reading more about it, this is not the normal approach, normally, the node joins the largest range. I am thinking, we can make things easier and support both my approach and the "normal" way. 
+4. I am going to implement following functionality. When the first node starts, it alone. There are no seed nodes. It services traffic alone and becomes the seed node for future nodes. Further ndoes that start up, gets the first node details as seed node and with gossip gets more detailed picture into the cluster.
+5. When new node starts up, it may optionally provide its EndOfKeyRange. If EndOfKeyRange is provided, it joins the cluster with that range, otherwise, when node starts gossiping - it waits sometime to have more clear picture of the cluster and then - decides its EndOfKeyRange. (Possible: I am aware that it maybe possible that if two nodes start at the same time may get the same picture of the cluster and may decide on same EndOfKeyRange. I will get back to this in future - maybe)
+6. Also, when new node starts up and has EndOfKeyRange, it will start to serve data without replication. Replication is  going to nice brain exercise soon.
