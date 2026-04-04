@@ -8,6 +8,7 @@ Distributed storage nodes is developed to gain the working knowledge of how stor
 6. how consistent hashing is implemented. With this I am particularly interested in understanging how nodes take over the load of dead nodes
 7. how is it decided that which node will handle the incoming request.
 8. Understand the working of gossip protocol.
+9. Implement a method such that any node can handle arbitary traffic, such that, if it receives traffic for request/data which it doesn't own then it redirects the traffic to original node.
 
 ## PRD
 Go is used, because I am familiar with it and nice developer experience.
