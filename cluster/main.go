@@ -13,6 +13,7 @@ import (
 	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
+// Depricated: cluster is no longer needed. Each node can start with seed node
 var (
 	storage = map[string]interface{}{}
 )

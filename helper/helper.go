@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"log/slog"
+	"strconv"
+	"time"
 
 	"github.com/goyal-aman/distributed-storage-nodes/err"
 )
@@ -36,4 +39,27 @@ func GetNode[T HasEndOfKeyRange](
 		}
 	}
 	return nil, err.ErrNoNodeWithRequiredEndOfKeyRange
+}
+
+func StrToUInt64(s string) (uint64, error) {
+	return strconv.ParseUint(s, 10, 64)
+}
+
+func MapToArr[K comparable, V any](m map[K]V) []V {
+	arr := []V{}
+	for _, val := range m {
+		arr = append(arr, val)
+	}
+	return arr
+}
+
+// MaxTime
+// return t1 if t1>t2 otherwise t2
+func MaxTime(t1, t2 time.Time) time.Time {
+	if t1.After(t2) {
+		slog.Debug("maxTime", "winner", t1, "a", t1, "b", t2)
+		return t1
+	}
+	slog.Debug("maxTime", "winner", t2, "a", t1, "b", t2)
+	return t2
 }

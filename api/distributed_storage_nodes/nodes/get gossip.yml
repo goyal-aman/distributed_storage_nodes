@@ -4,18 +4,11 @@ info:
   seq: 4
 
 http:
-  method: POST
-  url: http://localhost:7777/v1/
+  method: GET
+  url: http://localhost:7770/v1/gossip
   body:
     type: json
-    data: |-
-      {
-        "key":"name",
-        "value":{
-          "userid":"aman",
-          "usertype":"developer"
-        }
-      }
+    data: ""
   auth: inherit
 
 settings:

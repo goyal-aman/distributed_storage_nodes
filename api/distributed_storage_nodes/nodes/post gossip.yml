@@ -1,21 +1,22 @@
 info:
   name: post gossip
   type: http
-  seq: 3
+  seq: 6
 
 http:
   method: POST
-  url: http://localhost:7777/v1/
+  url: http://localhost:7771/v1/gossip
   body:
     type: json
     data: |-
-      {
-        "key":"name",
-        "value":{
-          "userid":"aman",
-          "usertype":"developer"
+      [
+        {
+          "Id": "1eff9b2e-de38-42b1-9df2-3bc897200b9b",
+          "Host": "http://0.0.0.0:7772",
+          "EndOfKeyRange": 4611686018427387904,
+          "LastUpdate": "2026-04-04T23:59:02.020065+05:30"
         }
-      }
+      ]
   auth: inherit
 
 settings:
