@@ -1,0 +1,26 @@
+info:
+  name: remove node
+  type: http
+  seq: 4
+
+http:
+  method: DELETE
+  url: http://localhost:8880/v1/node
+  body:
+    type: json
+    data: |-
+      {
+        "EndOfKeyRange": 18446744073709551615,
+        "Host": "http://0.0.0.0:7771"
+      }
+      // {
+      //   "EndOfKeyRange": 9223372036854775808,
+      //   "Host": "http://0.0.0.0:7770"
+      // }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

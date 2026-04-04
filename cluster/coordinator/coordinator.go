@@ -18,7 +18,8 @@ const (
 )
 
 const (
-	initNodeEndPoint = "/v1/node/init"
+	initNodeEndPoint     = "/v1/node/init"
+	updateGossipEndpoint = "/v1/gossip"
 )
 
 var (
@@ -143,7 +144,7 @@ func (c *Cluster) BroadCastNode(newNode StorageNode) {
 }
 
 func sendGossip(newNode, oldNode StorageNode) {
-	updateGossipEndpoint := "/v1/gossip"
+
 	payload := []types.Gossip{
 		{
 			Id:            newNode.Id,

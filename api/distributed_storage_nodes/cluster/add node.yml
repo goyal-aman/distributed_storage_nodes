@@ -1,0 +1,30 @@
+info:
+  name: add node
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: http://localhost:8880/v1/node
+  body:
+    type: json
+    data: |-
+      // {
+      //   "EndOfKeyRange": 9223372036854775808,
+      //   "Host": "http://0.0.0.0:7772"
+      // }
+      // {
+      //   "EndOfKeyRange": 4611686018427387904,
+      //   "Host": "http://0.0.0.0:7770"
+      // }
+      {
+        "EndOfKeyRange": 18446744073709551615,
+        "Host": "http://0.0.0.0:7771"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

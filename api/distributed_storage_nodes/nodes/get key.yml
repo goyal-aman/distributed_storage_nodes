@@ -1,0 +1,19 @@
+info:
+  name: get key
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: http://localhost:7777/v1?key=name
+  params:
+    - name: key
+      value: name
+      type: query
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

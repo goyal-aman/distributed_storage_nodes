@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -8,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
@@ -22,14 +23,16 @@ var (
 
 var (
 	PORT int
-	id   string
+)
+
+var (
+	updateGossipEndpoint = "/v1/gossip"
 )
 
 func init() {
 	flag.Parse()
 
 	PORT = *fPORT
-	id = uuid.New().String()
 }
 
 type Node struct {
@@ -41,13 +44,20 @@ type Node struct {
 
 func NewNode() *Node {
 	return &Node{
-		Gossip: make(map[string]types.Gossip),
+		Gossip: map[string]types.Gossip{},
 	}
 }
 
 func main() {
 	node := NewNode()
 	router := initRouter(node)
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		for t := range ticker.C {
+			node.BroadcastGossip(t)
+		}
+	}()
 
 	if err := router.Run(fmt.Sprintf("0.0.0.0:%d", PORT)); err == nil {
 		slog.Info("listening on", "port", PORT)
@@ -106,23 +116,52 @@ func (n *Node) initNode(c *gin.Context) {
 	slog.Info("updated node details", "node", n)
 }
 
-// func (n *Node) BroadcastGossip() {
+// BroadcastGossip
+// sends lastKnownTime of known nodes to all other known nodes
+// ideally it should pick and choose, but for the purpse of this
+// learning exercise, we are sending to all. It could choose randomly
+// which is trivial part.
+func (n *Node) BroadcastGossip(broadCaseTime time.Time) {
+	if n.Id == "" {
+		return
+	}
+	payload := n.Gossip
 
-// 	payload := map[string]types.Gossip{
-// 		id: types.Gossip{
-// 			Id:   id,
-// 			Host: fmt.Sprintf("http://0.0.0.0:%d", PORT),
-// 		},
-// 	}
+	myGossip := n.Gossip[n.Id]
+	myGossip.LastUpdate = time.Now()
+	n.Gossip[n.Id] = myGossip
 
-// 	for id, g := range gossipNode {
+	gossips := make([]types.Gossip, len(payload))
+	idx := 0
+	for _, val := range payload {
+		gossips[idx] = val
+		idx++
+	}
 
-// 	}
+	for id, g := range n.Gossip {
+		if id == n.Id {
+			continue
+		}
+		slog.Debug("Sending gossips", "from", *fPORT, "to", g.Host, "data", gossips)
+		sendGossip(g.Host, helper.ToBytesReader(gossips))
+	}
+	slog.Info("Broadcast success")
 
-// }
-// func sendGossip() {
+}
 
-// }
+func sendGossip(destHost string, bytesReader *bytes.Reader) {
+	resp, err := http.Post(destHost+updateGossipEndpoint, "application/json", bytesReader)
+	if err != nil {
+		slog.Error("err when sendGossip", "destHost", destHost, err)
+		// return fmt.Errorf("err occured while send init node", err)
+		return
+	}
+
+	respBytes := make([]byte, 0)
+	resp.Body.Read(respBytes)
+	slog.Info("send gossip success", "destHost", destHost, "status", resp.StatusCode, "resp_body", string(respBytes))
+
+}
 
 func (n *Node) updateGossipNodes(c *gin.Context) {
 	body := []types.Gossip{}
@@ -133,24 +172,52 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 		})
 	}
 
+	beforeUpdateGossip := logIDAndTime2(n.Gossip)
+	receviedUpdates := logIDAndTime(body)
+
 	for _, g := range body {
 		val, exist := n.Gossip[g.Id]
 		if exist {
 			val.LastUpdate = maxTime(val.LastUpdate, g.LastUpdate)
+			n.Gossip[g.Id] = val
 		} else {
 			n.Gossip[g.Id] = g
 		}
 	}
+	afterUpdateGossip := logIDAndTime2(n.Gossip)
+
+	slog.Debug("receive gossip updates", "curr_host", n.Host, "received_updates", receviedUpdates,
+		"before_updates", beforeUpdateGossip, "after_updates", afterUpdateGossip)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": n.Gossip,
 	})
 }
 
+func logIDAndTime2(m map[string]types.Gossip) map[string]time.Time {
+	m2 := map[string]time.Time{}
+	for _, v := range m {
+		m2[v.Host] = v.LastUpdate
+	}
+	return m2
+
+}
+
+func logIDAndTime(g []types.Gossip) map[string]time.Time {
+	m := map[string]time.Time{}
+	for _, gt := range g {
+		m[gt.Host] = gt.LastUpdate
+	}
+	return m
+
+}
+
 func maxTime(t1, t2 time.Time) time.Time {
 	if t1.After(t2) {
+		slog.Debug("maxTime", "winner", t1, "a", t1, "b", t2)
 		return t1
 	}
+	slog.Debug("maxTime", "winner", t2, "a", t1, "b", t2)
 	return t2
 }
 
