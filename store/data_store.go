@@ -6,6 +6,9 @@ import (
 	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
+// Compile time check
+var _ Store = (*DataStore)(nil)
+
 type DataStore struct {
 	// mu
 	// any read and write operation in store
@@ -22,12 +25,18 @@ type DataStore struct {
 	store map[string][]types.StoreEntry
 }
 
+func NewDataStore() Store {
+	return &DataStore{
+		store: make(map[string][]types.StoreEntry),
+	}
+}
+
 func (d *DataStore) Get(key string) (any, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	val, exist := d.store[key]
-	latestVersion := val[len(val)-1]
 	if exist {
+		latestVersion := val[len(val)-1]
 		return latestVersion.Value, nil
 	}
 	return nil, nil

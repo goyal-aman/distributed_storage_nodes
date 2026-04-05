@@ -4,7 +4,7 @@ import "github.com/goyal-aman/distributed-storage-nodes/types"
 
 type Store interface {
 	// Get get by key
-	Get(key string) interface{}
+	Get(key string) (any, error)
 
 	// Put store value againt key
 	Put(key string, value interface{}) error

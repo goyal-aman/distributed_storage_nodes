@@ -16,6 +16,7 @@ import (
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	apiclient "github.com/goyal-aman/distributed-storage-nodes/nodes/api_client"
+	"github.com/goyal-aman/distributed-storage-nodes/store"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
@@ -25,7 +26,8 @@ const (
 )
 
 var (
-	storage = map[string]interface{}{}
+	storage   = map[string]interface{}{}
+	storagev2 = store.NewDataStore()
 )
 
 var (
@@ -208,6 +210,10 @@ func initRouter(node *Node) *gin.Engine {
 	// v1/nodedetail
 	nodedetailv1 := routerv1.Group("nodedetail")
 	nodedetailv1.GET("", node.nodeForKey)
+
+	// v1/snapshot
+	snapshotv1 := routerv1.Group("snapshot")
+	snapshotv1.GET("", node.getSnapShot)
 
 	return router
 
@@ -411,7 +417,12 @@ func (n *Node) handlePost(c *gin.Context) {
 	}
 
 	slog.Info("handle post", "body", body)
-	storage[key] = value
+	if err := storagev2.Put(key, value); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "ok",
 		"owner_node": ownerNode.Id,
@@ -457,7 +468,14 @@ func (n *Node) handleGet(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "ok", "value": storage[key]})
+	if val, err := storagev2.Get(key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+	} else {
+		c.JSON(http.StatusOK, gin.H{"message": "ok", "value": val})
+
+	}
 }
 
 // nodedetail return details of node own the 'key'
@@ -484,4 +502,10 @@ func (n *Node) nodeForKey(c *gin.Context) {
 		"node": node,
 	})
 
+}
+
+func (n *Node) getSnapShot(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"value": storagev2.Snapshot(),
+	})
 }
