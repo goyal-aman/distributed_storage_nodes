@@ -94,6 +94,7 @@ type Node struct {
 	EndOfKeyRange uint64
 	Gossip        map[string]types.Gossip
 	LastUpdate    time.Time
+	State         types.NodeState
 }
 
 func (n Node) XEndOfKeyRange() uint64 {
@@ -127,15 +128,24 @@ func NewNode() *Node {
 
 			id := nodeMeta["Id"].(string)
 			host := nodeMeta["Host"].(string)
+			state := types.NodeState(nodeMeta["State"].(string))
 			a := types.Gossip{
 				Id:            id,
 				Host:          host,
 				EndOfKeyRange: endOfKeyRange,
 				LastUpdate:    t,
+				State:         state,
 			}
 			gossipNodes[id] = a
 		}
 		slog.Info("seed node found", "seed_node", gossipNodes)
+	}
+
+	// all node starts with "JOINING" state in existing
+	//  cluster. For new clusters, nodes are immediately available
+	nodeState := types.JOINING
+	if len(gossipNodes) == 0 {
+		nodeState = types.AVAILABLE
 	}
 
 	node := &Node{
@@ -144,7 +154,9 @@ func NewNode() *Node {
 		Gossip:        gossipNodes,
 		EndOfKeyRange: GVar_EndOfKeyRange,
 		LastUpdate:    time.Now(),
+		State:         nodeState,
 	}
+
 	slog.Info("node created", "node", node)
 	return node
 }
@@ -210,6 +222,7 @@ func (n *Node) nodemeta(c *gin.Context) {
 		"Gossip":        n.Gossip,
 		"EndOfKeyRange": n.EndOfKeyRange,
 		"LastUpdate":    n.LastUpdate,
+		"State":         n.State,
 	})
 }
 
@@ -246,11 +259,14 @@ func (n *Node) BroadcastGossip(_ time.Time) {
 	// dont do g := n.Gossip[n.Id]; g.LastUpdate=time.Now(); n.Gossip[n.Id]=g
 	// because it is possible that n.Gossip may not contain n.Id
 	now := time.Now()
+	n.LastUpdate = now
+
 	n.Gossip[n.Id] = types.Gossip{
 		Id:            n.Id,
 		Host:          n.Host,
 		EndOfKeyRange: n.EndOfKeyRange,
-		LastUpdate:    now,
+		LastUpdate:    n.LastUpdate,
+		State:         n.State,
 	}
 
 	gossips := make([]types.Gossip, len(payload))
@@ -365,6 +381,7 @@ func (n *Node) handlePost(c *gin.Context) {
 	value := body["value"]
 
 	token := helper.HashKey(key, Total_Slots)
+	slog.Info("handle post", "sorted_gossips", ar, "key_token", token)
 	ownerNode, err := helper.GetNode(ar, token)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

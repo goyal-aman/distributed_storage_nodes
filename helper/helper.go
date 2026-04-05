@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goyal-aman/distributed-storage-nodes/err"
+	"github.com/goyal-aman/distributed-storage-nodes/types"
 )
 
 func ToBytesReader(a any) *bytes.Reader {
@@ -28,13 +29,25 @@ type HasEndOfKeyRange interface {
 	XEndOfKeyRange() uint64
 }
 
+type HasState interface {
+	XState() types.NodeState
+}
+
 // GetNode
-// find the node which owns the the token (token=hash(key))
-func GetNode[T HasEndOfKeyRange](
+// takes in any type which has XEndOfKeyRange() and State()
+// defined. find the node which owns the the token (token=hash(key))
+// returns only nodes with XState() == types.AVAILABLE
+func GetNode[T interface {
+	HasEndOfKeyRange
+	HasState
+}](
 	nodes []T,
 	token uint64) (*T, error) {
 	for _, node := range nodes {
-		if token < node.XEndOfKeyRange() {
+
+		// only available nodes are considered for traffic routing
+		if node.XState() == types.AVAILABLE &&
+			token < node.XEndOfKeyRange() {
 			return &node, nil
 		}
 	}
