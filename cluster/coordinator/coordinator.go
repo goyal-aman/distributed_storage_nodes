@@ -69,7 +69,7 @@ func (c *Cluster) AddNode(node types.StorageNode) error {
 		}
 		c.nodes = append(c.nodes, node)
 	} else {
-		index, err := NextNode(c.nodes, endOfKeyRange)
+		index, err := FindInsertIndex(c.nodes, endOfKeyRange)
 		if err != nil {
 			slog.Error("err in finding nextnode", "err", err, "index", index)
 			return fmt.Errorf("err in addNode", err)
@@ -166,18 +166,19 @@ func (c *Cluster) GetNode(key uint64) (*types.StorageNode, error) {
 	return helper.GetNode(c.nodes, key)
 }
 
-// NextNode find the index in the array where 'key' should be inserted such that
+
+// FindInsertIndex find the index in the array where token should be inserted such that
 // array remains sorted in increasing order on node.endOfKeyRange
 // which means left most node such that key < node.endOfKeyRange
-func NextNode(nodes []types.StorageNode, val uint64) (int, error) {
+func FindInsertIndex(nodes []types.StorageNode, token uint64) (int, error) {
 	if len(nodes) == 0 {
 		return 0, nil
 	}
 	for i, node := range nodes {
-		if val == node.EndOfKeyRange {
+		if token == node.EndOfKeyRange {
 			return 0, ErrNodeAlrExistWithEndOfKeyRange
 		}
-		if val < node.EndOfKeyRange {
+		if token < node.EndOfKeyRange {
 			return i, nil
 		}
 	}

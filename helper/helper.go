@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"log/slog"
+	"slices"
+	"sort"
 	"strconv"
 	"time"
 
@@ -37,6 +39,7 @@ type HasState interface {
 // takes in any type which has XEndOfKeyRange() and State()
 // defined. find the node which owns the the token (token=hash(key))
 // returns only nodes with XState() == types.AVAILABLE
+// nodes must be in increases order of EndOfKeyRange
 func GetNode[T interface {
 	HasEndOfKeyRange
 	HasState
@@ -75,4 +78,44 @@ func MaxTime(t1, t2 time.Time) time.Time {
 	}
 	slog.Debug("maxTime", "winner", t2, "a", t1, "b", t2)
 	return t2
+}
+
+// GetNodeByToken
+// returns the next available node which handles the token (token = hash(key))
+// nodes must be in increases order of EndOfKeyRange
+func GetNodeByToken[T interface {
+	HasEndOfKeyRange
+	HasState
+}](nodes []T, token uint64) (*T, error) {
+	for _, node := range nodes {
+		if node.XState() == types.AVAILABLE &&
+			token <= node.XEndOfKeyRange() {
+			return &node, nil
+		}
+	}
+	return nil, err.ErrNoNodeWithRequiredEndOfKeyRange
+}
+
+// GetNodeForReplication
+// for a given owner node it returns a another
+// node n which should follow writes of owner node
+func GetNodeForReplication[T interface {
+	HasEndOfKeyRange
+	HasState
+}](nodes []T, eokr uint64) *T {
+	for _, n := range slices.Backward(nodes) {
+		if n.XEndOfKeyRange() < eokr &&
+			n.XState() == types.BOOTSTRAPPING {
+			return &n
+		}
+	}
+	return nil
+}
+
+func SortNodeInPlace[T interface{ HasEndOfKeyRange }](ar []T) {
+	sort.Slice(ar, func(a, b int) bool {
+		// increasing order in EndOfKeyRange
+		return ar[a].XEndOfKeyRange() < ar[b].XEndOfKeyRange()
+	})
+
 }

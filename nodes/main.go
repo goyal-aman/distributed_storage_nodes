@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -97,6 +98,9 @@ type Node struct {
 	Gossip        map[string]types.Gossip
 	LastUpdate    time.Time
 	State         types.NodeState
+
+	// isReadyForBootstrapping
+	gossipMeta []int
 }
 
 func (n Node) XEndOfKeyRange() uint64 {
@@ -202,6 +206,10 @@ func initRouter(node *Node) *gin.Engine {
 	datav1.POST("", node.handlePost)
 	datav1.GET("", node.handleGet)
 
+	// v1/data/replicate
+	replicatev1 := datav1.Group("replicate")
+	replicatev1.POST("", node.replicateWrite)
+
 	// v1/gossip
 	gossipv1 := routerv1.Group("gossip")
 	gossipv1.POST("", node.updateGossipNodes)
@@ -230,6 +238,67 @@ func (n *Node) nodemeta(c *gin.Context) {
 		"LastUpdate":    n.LastUpdate,
 		"State":         n.State,
 	})
+}
+
+func (n *Node) changeStateToBootStrappingIfReady() bool {
+	if n.State != types.JOINING {
+		return false
+	}
+	slog.Info("checking for bootstrapping")
+	gossip := n.Gossip
+	n.gossipMeta = append(n.gossipMeta, len(gossip))
+
+	if len(n.gossipMeta) >= 3 &&
+		n.gossipMeta[len(n.gossipMeta)-1] == n.gossipMeta[len(n.gossipMeta)-2] &&
+		n.gossipMeta[len(n.gossipMeta)-2] == n.gossipMeta[len(n.gossipMeta)-3] {
+		n.State = types.BOOTSTRAPPING
+		go n.BroadcastGossip(time.Now()) //inform all other nodes of state change
+		slog.Info("changing state to boostrapping")
+		go n.handleBootstrapping()
+		return true
+	}
+	return false
+}
+
+func (n *Node) handleBootstrapping() {
+	// find source node of data
+	// find node just to the right
+	gossipNodes := helper.MapToArr(n.Gossip)
+	nextNode, err := helper.GetNodeByToken(gossipNodes, n.EndOfKeyRange+1)
+	if err != nil {
+		slog.Error("cannot find next node in bootstrapping", "err", err)
+	}
+	fmt.Println(nextNode)
+
+	// TODO: currently I am not a huge fan of how request snapshot
+	// and dual writes are working together.
+	// in current implementation, state of curr node is changed to
+	// BOOTSTRAPPING, then snapshot is requested.
+	// it is possible that when current node changes its state from JOINING
+	// to BOOTSTRAPPING, it immediate request for snapshot form the owner node.
+	// The ownernode, on getting request of snapshot, immediatly creates point-in-time
+	// snapshot and streams it back to new node. In this the ownernode hasn't actually
+	// started dual writing new changes to new node, this is because it is possible
+	// new node might get update after some delay that new node has changed its state to
+	// BOOTSTRAPPING.
+	// I am thinking that when new node requests the point-in-time snapshot for streaming
+	// original node should use same connection/stream to stream new changes back to
+	// new node. When snapshot have been streamed completely, the owner node
+	// can send snapshot-completion event back to owner node while continuing
+	// to stream change events to new-node. New node on receiving snapshot completion
+	// event will change its state to "AVAILABLE" and broadcast new state to other nodes.
+	// All nodes, including original node, after receing latest state of new-node as "JOINING"
+	//  will redirect all related traffic to new-node instead of original node.
+	// which means original node will eventually reach a point where it has no mutations/writes
+	// to stream back to. At this point, the replication stream request can be closed successfully.
+	apiclient.RequestSnapshot(nextNode.Host)
+	n.State = types.AVAILABLE
+	go n.BroadcastGossip(time.Now()) // inform other nodes of state change immediate
+	slog.Info("updated status to available")
+
+	// request snapshot
+	// update snapshot
+	// change to available
 }
 
 // Depricated
@@ -316,6 +385,7 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 			"message": "something wrong with body",
 			"err":     err.Error(),
 		})
+		return
 	}
 
 	beforeUpdateGossip := logIDAndTime2(n.Gossip)
@@ -324,8 +394,12 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 	for _, g := range body {
 		val, exist := n.Gossip[g.Id]
 		if exist {
-			val.LastUpdate = helper.MaxTime(val.LastUpdate, g.LastUpdate)
-			n.Gossip[g.Id] = val
+			if g.LastUpdate.After(val.LastUpdate) {
+				val.LastUpdate = g.LastUpdate
+				val.State = g.State
+				n.Gossip[g.Id] = val
+			}
+
 		} else {
 			n.Gossip[g.Id] = g
 		}
@@ -334,6 +408,8 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 
 	slog.Debug("receive gossip updates", "curr_host", n.Host, "received_updates", receviedUpdates,
 		"before_updates", beforeUpdateGossip, "after_updates", afterUpdateGossip)
+
+	n.changeStateToBootStrappingIfReady()
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": n.Gossip,
@@ -375,6 +451,7 @@ func (n *Node) handlePost(c *gin.Context) {
 			"message": "something wrong with body",
 			"err":     err.Error(),
 		})
+		return
 	}
 
 	ar := helper.MapToArr(n.Gossip)
@@ -399,23 +476,29 @@ func (n *Node) handlePost(c *gin.Context) {
 	// is someother node own the key
 	// get data from it
 	if ownerNode.Id != n.Id {
-		if rerr := apiclient.PostKeyValue(*ownerNode, key, value); rerr != nil {
+		rerr := apiclient.PostKeyValue(*ownerNode, key, value)
+		if rerr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": rerr.Error(),
 			})
-		} else {
-			c.JSON(http.StatusOK, gin.H{
-				"message": "OK",
-				"metadata": map[string]string{
-					"redirected":  "true",
-					"serviced_by": n.Id,
-					"owned_by":    ownerNode.Id,
-				},
-			})
 		}
+		c.JSON(http.StatusOK, gin.H{
+			"message": "OK",
+			"metadata": map[string]string{
+				"redirected":  "true",
+				"serviced_by": n.Id,
+				"owned_by":    ownerNode.Id,
+			},
+		})
+
 		return
 	}
 
+	// current node own the key range
+	// store in the databaase, additionally, if there is node
+	// with EndOfKeyRange just less than curr node.EndOfKeyRange
+	// and State == BootStrapping then this write needs to be replicated there.
+	// Later on I'll check whether this can be achieved by raft algo
 	slog.Info("handle post", "body", body)
 	if err := storagev2.Put(key, value); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -423,9 +506,67 @@ func (n *Node) handlePost(c *gin.Context) {
 		})
 		return
 	}
+
+	if followerNode := helper.GetNodeForReplication(ar, n.EndOfKeyRange); followerNode != nil {
+		err = apiclient.ReplicateWrite(followerNode.Host, key, value)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Errorf("%w, error replicating write to bootstraping node", err),
+			})
+			return
+		}
+	}
+
+	// everything success
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "ok",
 		"owner_node": ownerNode.Id,
+	})
+}
+
+// TODO implement replicateWrite
+// replicateWrite
+// it receives write from leader node to replicate the write
+// the replicated write is verified to ensure that current
+// node is in "BOOTSTRAPPING" phase and token ( hash(key)->token )
+// is indeed belongs to current node
+// Note
+// currently I am not a fan of how dual writes are implemented
+// after the current node's state changes from JOINING to BOOTSTRAPPING
+func (n *Node) replicateWrite(c *gin.Context) {
+	body := map[string]interface{}{}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "something wrong with body",
+			"err":     err.Error(),
+		})
+		return
+	}
+
+	key, ok := body["key"].(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid type of 'key'. 'key' should be string",
+		})
+		return
+	}
+
+	value, exist := body["value"]
+	if !exist {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "value is nil, value must exist",
+		})
+		return
+	}
+
+	if err := storagev2.Put(key, value); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "OK",
 	})
 }
 
@@ -434,10 +575,11 @@ func (n *Node) handleGet(c *gin.Context) {
 	slog.Info("handle get", "key", key)
 
 	ar := helper.MapToArr(n.Gossip)
-	sort.Slice(ar, func(a, b int) bool {
-		// increasing order in EndOfKeyRange
-		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
-	})
+	helper.SortNodeInPlace(ar)
+	// sort.Slice(ar, func(a, b int) bool {
+	// 	// increasing order in EndOfKeyRange
+	// 	return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
+	// })
 
 	token := helper.HashKey(key, Total_Slots)
 	ownerNode, err := helper.GetNode(ar, token)
@@ -505,6 +647,47 @@ func (n *Node) nodeForKey(c *gin.Context) {
 }
 
 func (n *Node) getSnapShot(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+	ch := make(chan []interface{}, 0)
+
+	go func() {
+		defer close(ch)
+		if len(storagev2.Snapshot()) > 0 {
+			for key, value := range storagev2.Snapshot() {
+				ch <- []interface{}{key, value}
+				time.Sleep(100 * time.Millisecond)
+			}
+
+		}
+	}()
+
+	// c.Stream takes a function that returns a boolean.
+	// Returning true keeps the stream open; false closes it.
+	c.Stream(func(w io.Writer) bool {
+
+		// Send an event with a name and data
+		select {
+		case <-c.Request.Context().Done():
+			slog.Error("connection closed before snapshot replication completed")
+		case event := <-ch:
+			slog.Info("sending event ", "event", event)
+			if len(event) == 0 {
+				return false
+			} else {
+				c.SSEvent("message", gin.H{
+					"key":   event[0],
+					"valye": event[1],
+				})
+				return true
+
+			}
+		}
+
+		return true // Keep streaming
+	})
 	c.JSON(http.StatusOK, gin.H{
 		"value": storagev2.Snapshot(),
 	})
