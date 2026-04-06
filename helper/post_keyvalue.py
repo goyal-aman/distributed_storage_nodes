@@ -32,7 +32,6 @@ def main():
                 print(f"[{i}] Status: {resp.status}, Response: {body}")
         except Exception as e:
             print(f"[{i}] Error: {e}")
-        time.sleep(0.1)
 
 if __name__ == "__main__":
     # python3 post_keyvalue.py 10

@@ -209,6 +209,7 @@ func initRouter(node *Node) *gin.Engine {
 	// v1/data/replicate
 	replicatev1 := datav1.Group("replicate")
 	replicatev1.POST("", node.replicateWrite)
+	replicatev1.GET("", node.startReplication)
 
 	// v1/gossip
 	gossipv1 := routerv1.Group("gossip")
@@ -646,21 +647,89 @@ func (n *Node) nodeForKey(c *gin.Context) {
 
 }
 
-func (n *Node) getSnapShot(c *gin.Context) {
+func (n *Node) startReplication(c *gin.Context) {
+
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("Transfer-Encoding", "chunked")
-	ch := make(chan []interface{}, 0)
+
+	// for replicating snapshot
+	replSSCh := make(chan []interface{})
+
+	// for replicating writes/mutations that come in
+	// during replication
+	replLiveMutationChan := make(chan []interface{})
+
+	// used to verify state of sourceid
+	// if sourceid.state is AVAILABLE and there
+	// are no live writes/mutation replicate then
+	// it is safe to close chan responsible for
+	// replicating live writes/mutation
+	sourceNodeId := c.Query("sourceid")
+	lastLiveMutationSentTimeStamp := time.Now()
+
+	// call this hook after snapshot is replicated
+	// and sourceId node is in "AVAILABLE" state
+	var postWriteHookReset store.PostWriteHookCncl
+
+	// isReplSnapshotCompletionEventSent
+	// if true it means snapshot replication is complete
+	isReplSnapshotCompletionEventSent := false
+
+	// isLiveMutationCompleteEventSent
+	// if true, it means live mutations are completed
+	isLiveMutationCompleteEventSent := false
 
 	go func() {
-		defer close(ch)
-		if len(storagev2.Snapshot()) > 0 {
-			for key, value := range storagev2.Snapshot() {
-				ch <- []interface{}{key, value}
-				time.Sleep(100 * time.Millisecond)
+		ticker := time.NewTicker(3 * time.Second)
+		for range ticker.C {
+			sourceNode, exist := n.Gossip[sourceNodeId]
+			if !exist {
+				continue
 			}
+			sourceState := sourceNode.State
+			if isReplSnapshotCompletionEventSent &&
+				sourceState == types.AVAILABLE &&
+				time.Now().After(lastLiveMutationSentTimeStamp.Add(10*time.Second)) {
 
+				close(replLiveMutationChan)
+				postWriteHookReset()
+				ticker.Stop()
+				slog.Info("Live Mutation Completed")
+				break
+			}
+		}
+	}()
+
+	// replicate snapshot
+	go func() {
+		defer close(replSSCh)
+		numKeys := storagev2.Size()
+		if numKeys == 0 {
+			return
+		}
+
+		// set postwrite hook such that new mutations/writes
+		// are passed to replLiveMutationch channel
+		var snapshot store.Snapshot
+		snapshot, postWriteHookReset = storagev2.Snapshot(
+			store.WithPostWriteHook(func(key string, val any, version uint64) {
+				replLiveMutationChan <- []interface{}{key, val, version}
+			}),
+		)
+
+		for key, values := range snapshot {
+			// at present values which is array of all versions
+			// is returned, possibly in future, it can be looked
+			// upon if it can be improved
+			replSSCh <- []interface{}{key, values}
+
+			// sleep added only to increase time of replication
+			// during testing I'm not able to generate enough
+			// data to keep replication going on for meaningful
+			// duration
+			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
@@ -668,27 +737,115 @@ func (n *Node) getSnapShot(c *gin.Context) {
 	// Returning true keeps the stream open; false closes it.
 	c.Stream(func(w io.Writer) bool {
 
+		// this state is reaches after snapshot replication is complete
+		// and liveMutations are not more being replicated
+		if isLiveMutationCompleteEventSent && isReplSnapshotCompletionEventSent {
+			return false
+		}
+
 		// Send an event with a name and data
 		select {
 		case <-c.Request.Context().Done():
 			slog.Error("connection closed before snapshot replication completed")
-		case event := <-ch:
-			slog.Info("sending event ", "event", event)
-			if len(event) == 0 {
-				return false
+			return false
+		case snapshotEvent, ok := <-replSSCh:
+			if !ok {
+				replSSCh = nil
+				if !isReplSnapshotCompletionEventSent {
+					c.SSEvent("message", gin.H{
+						"type": "replication_complete",
+					})
+					isReplSnapshotCompletionEventSent = true
+				}
+				slog.Info("snapshot replication completed")
 			} else {
+				// snapshotEvent is []interface{key_str, value_interface, version_uint64}
+				// after channel is closed, reading from it
+				// returns zero value.
 				c.SSEvent("message", gin.H{
-					"key":   event[0],
-					"valye": event[1],
+					"type":   "replication",
+					"key":    snapshotEvent[0],
+					"values": snapshotEvent[1],
 				})
 				return true
+			}
 
+		case liveMutationsEvent, ok := <-replLiveMutationChan:
+			if !ok {
+				replLiveMutationChan = nil
+				if !isLiveMutationCompleteEventSent {
+					c.SSEvent("message", gin.H{
+						"type": "live_mutation_complete",
+					})
+					isLiveMutationCompleteEventSent = true
+				}
+				slog.Info("live mutation replication completed")
+			} else {
+
+				// update when last live mutation was sent
+				lastLiveMutationSentTimeStamp = time.Now()
+
+				// liveMutationsEvent is []interface{key_str, value_interface, version_uint64}
+				// after channel is closed, reading from it
+				// returns zero value.
+				c.SSEvent("message", gin.H{
+					"type":   "live_mutation",
+					"key":    liveMutationsEvent[0],
+					"values": liveMutationsEvent[1],
+				})
+				return true
 			}
 		}
-
 		return true // Keep streaming
 	})
+
+}
+
+func (n *Node) getSnapShot(c *gin.Context) {
+	// c.Writer.Header().Set("Content-Type", "text/event-stream")
+	// c.Writer.Header().Set("Cache-Control", "no-cache")
+	// c.Writer.Header().Set("Connection", "keep-alive")
+	// c.Writer.Header().Set("Transfer-Encoding", "chunked")
+	// ch := make(chan []interface{}, 0)
+
+	// go func() {
+	// 	defer close(ch)
+	// 	if len(storagev2.Snapshot()) > 0 {
+	// 		for key, value := range storagev2.Snapshot() {
+	// 			ch <- []interface{}{key, value}
+	// 			time.Sleep(100 * time.Millisecond)
+	// 		}
+
+	// 	}
+	// }()
+
+	// c.Stream takes a function that returns a boolean.
+	// Returning true keeps the stream open; false closes it.
+	// c.Stream(func(w io.Writer) bool {
+
+	// 	// Send an event with a name and data
+	// 	select {
+	// 	case <-c.Request.Context().Done():
+	// 		slog.Error("connection closed before snapshot replication completed")
+	// 	case event := <-ch:
+	// 		slog.Info("sending event ", "event", event)
+	// 		if len(event) == 0 {
+	// 			return false
+	// 		} else {
+	// 			c.SSEvent("message", gin.H{
+	// 				"key":   event[0],
+	// 				"valye": event[1],
+	// 			})
+	// 			return true
+
+	// 		}
+	// 	}
+
+	// 	return true // Keep streaming
+	// })
+	snapshot, cancelHook := storagev2.Snapshot()
+	defer cancelHook()
 	c.JSON(http.StatusOK, gin.H{
-		"value": storagev2.Snapshot(),
+		"value": snapshot,
 	})
 }
