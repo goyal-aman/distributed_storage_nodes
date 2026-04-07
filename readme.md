@@ -1,71 +1,181 @@
 # Distributed Storage Nodes
-Distributed storage nodes is developed to gain the working knowledge of how storage system like cassandra databases work in production and provide some of the features. With this project I am particullarly interested in learning
-1. how cassandra does replication using merkle tree on live production data which has writes happening
-2. writes to storage nodes are handled to provide durability
-3. reads are offered by storage nodes
-4. quorom is implemented to prodivde tunable consistency
-5. understand node failure are handled. Particularly, I want to understand how other nodes decide a particular node is dead and then take over.
-6. how consistent hashing is implemented. With this I am particularly interested in understanging how nodes take over the load of dead nodes
-7. how is it decided that which node will handle the incoming request.
-8. Understand the working of gossip protocol.
-9. Implement a method such that any node can handle arbitary traffic, such that, if it receives traffic for request/data which it doesn't own then it redirects the traffic to original node.
 
-## PRD
-Go is used, because I am familiar with it and nice developer experience.
+[![Go Version](https://img.shields.io/badge/Go-1.25+-blue.svg)](https://golang.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-1. There are storage nodes. 
-2. Each storage node handles subset of data based on key range.
-3. Cluster is collection of storage node, with atleast 1 storage node.
-4. Communication happens using REST over HTTP. For the purpose of this project REST is sufficient.
-5. We can remove the concept of cluster or coordinator node entirely, and when an node starts we can supply the seed node which can act as cluster node.
+A hands-on implementation of distributed storage principles inspired by Apache Cassandra. This project demonstrates core distributed systems concepts including consistent hashing, gossip protocols, data replication, and fault tolerance through a cluster of storage nodes.
 
+## 🚀 What This Project Is
 
-# Adding Gossip & Enabling nodes to handle all traffic
-In my attempt to create distributed storage nodes in order to learn a lot of principles of distributed systems and cassandra. I have gotten this far - I've storage nodes and a coordinator nodes.
+I've been building this distributed storage system to better understand how databases like Cassandra work in production. It's not meant to be a production-ready system, but rather a learning tool to explore concepts like:
 
-coordinator node is also called cluster. 
+- How consistent hashing distributes data across nodes
+- How gossip protocols handle node discovery and failure detection  
+- How data replication works when adding new nodes to a live system
+- How node state management works during the join/bootstrap process
+and more
 
-each time a new node is started, it has no "id", "host" and "EndOfKeyRange" details in it. In cluster there is a endpoint /addnode which add nodes information it in list of known nodes and also updates the node metadata in the node by called /node/init endpoint on storage node. which adds id, host, and EndOfKeyRange details in the node.
+This is very much a work-in-progress and learning project. I'm implementing these concepts step by step, making mistakes along the way and documenting my thought process in the design files.
 
-EndOfKeyRange property of the storage node directly tells node what range of hashes (hases of key) in the consistent-hash-ring it is responsible for. If a node has EndOfKeyRange as X, then it handles the traffic of hash<=X. FOr more details if there are three nodes in consistent-hash-ring with EndOfKeyRange values of nodea->10, nodeb->50, nodec->100, then nodea handles traffic of all hashes of key <=10, nodeb handles (10,  50], nodec handles (50, 100].
+## ✨ Key Features
 
-each storage node in the cluster also has gossip behavior, when nodes are added to cluster using /addnode endpoint in cluster, all existing nodes are informed about new-nodes using /updategossip endpoint. when node receives gossip on /updategossip endpoint, they add the new node their their 'gossipNodes' list that they maintain. in the list they maintain information about all known nodes along with the host (ip:port), their id  (uuid), their EndOfKeyRange, and their lastUpdate (timestamp field).
+- **Decentralized Architecture**: No single point of failure—nodes communicate peer-to-peer
+- **Dynamic Node Addition**: Seamlessly add new storage nodes with automatic data replication
+- **Gossip-Based Discovery**: Automatic node discovery and health monitoring
+- **Consistent Hashing**: Efficient data distribution using hash rings
+- **Live Replication**: Real-time data synchronization during node bootstrapping
+- **REST API**: Clean HTTP interfaces for all operations
+- **In-Memory Storage**: Fast key-value operations 
 
-anytime a node recieves get or post traffic, it checks whether it owns the key, that is hash(key) ->token is <= EndOfKeyRange among all nodes, if so then it handles the traffic other wise it find the owner and redirects the traffic to owner nodes and serves the response.
+## 🚧 Development Roadmap
 
-all nodes also gossip on fixed interval letting all known nodes with its own updated timestamp. there fore each node maintains withit all known nodes and their lastKnown update timestamp in cluster (gossip protocol)
+### ✅ Core Features (Implemented)
+- Decentralized peer-to-peer node communication
+- Consistent hashing with configurable key ranges
+- Gossip protocol for cluster membership
+- Live data replication during node bootstrapping
+- RESTful APIs for data operations
+- Node state management (JOINING → BOOTSTRAPPING → AVAILABLE)
 
+### 🔄 Up Next (Active Development)
+- **Non-blocking Replication**: At present, point-in-time snapshot of datastore stops all writes. Goal is to learn, develop & implement point-in-time snapshot. So Far, I am aware of LSM Tree based approach. More details to be researched.
 
-# Removing Cluslter Abstraction
-1. At present, new node is needed to be added into the cluster manually. When new node is added into cluster using /addnode endpoint, cluster informs all other nodes in the cluster about new node using /upategossip endpoint. Then the nodes take over the responsibility to informing other nodes about their health status using gossip protocol. 
-2. Now that I've had more time to think about design and implementation; need of cluster seems unnecessary. I am thinking when new node start up, it can be supplied seed node, that is, the details of existing nodes. New node then can communicate with supplied nodes to get more detailed picture of the cluster.
-3. Also, at present when new node is created, the node gets to decide its EndOfKeyRange property. After reading more about it, this is not the normal approach, normally, the node joins the largest range. I am thinking, we can make things easier and support both my approach and the "normal" way. 
-4. I am going to implement following functionality. When the first node starts, it alone. There are no seed nodes. It services traffic alone and becomes the seed node for future nodes. Further ndoes that start up, gets the first node details as seed node and with gossip gets more detailed picture into the cluster.
-5. When new node starts up, it may optionally provide its EndOfKeyRange. If EndOfKeyRange is provided, it joins the cluster with that range, otherwise, when node starts gossiping - it waits sometime to have more clear picture of the cluster and then - decides its EndOfKeyRange. (Possible: I am aware that it maybe possible that if two nodes start at the same time may get the same picture of the cluster and may decide on same EndOfKeyRange. I will get back to this in future - maybe)
-6. Also, when new node starts up and has EndOfKeyRange, it will start to serve data without replication. Replication is  going to nice brain exercise soon.
-7. Cluster abstraction is removed. We can start with following 
+### 📋 Backlog (Future Enhancements)
+- **Persistent Storage Backend**: Replace in-memory storage with disk persistence
+- **Node Failure Detection**: Enhanced gossip with heartbeat monitoring
+- **Data Replication for Fault Tolerance**: Multi-replica support with configurable replication factor
+- **Quorum & Consistency Levels**: Tunable consistency (strong/eventual) with read/write quorums
+- **Node Removal**: Graceful decommissioning of storage nodes
+- **Compaction**: Data cleanup and storage optimization
+
+*Got ideas for the roadmap? Open an issue or PR!*
+
+## 🏗️ Architecture Overview
+
+### Node States
+- **JOINING**: New node gathering cluster topology
+- **BOOTSTRAPPING**: Replicating data from existing nodes
+- **AVAILABLE**: Actively serving read/write requests
+
+### Data Flow
+1. **Consistent Hashing**: Keys are hashed and assigned to nodes based on hash ranges
+2. **Gossip Protocol**: Nodes exchange membership and health information
+3. **Replication**: New nodes replicate data from predecessors during bootstrapping
+4. **Traffic Routing**: Any node can handle requests and route to the correct owner
+
+## 🛠️ Quick Start
+
+### Prerequisites
+- Go 1.25+
+- Basic understanding of distributed systems (optional but helpful)
+
+### Installation
+
+```bash
+git clone https://github.com/goyal-aman/distributed-storage-nodes.git
+cd distributed-storage-nodes
+go mod download
 ```
-# start a node, this node will act as seed node for other nodes
-# to find more details on support flags using go run nodes/main.go --help
+
+### Running Your First Cluster
+
+Start the seed node (handles the full hash range):
+
+```bash
+make seed
+# or manually:
 go run nodes/main.go -eokr=18446744073709551615 -host=http://0.0.0.0:7770
+```
 
-# start other nodes 
+Add a second node (handles half the range):
+
+```bash
+make node1
+# or manually:
 go run nodes/main.go -port=7771 -seed=http://0.0.0.0:7770 -eokr=9223372036854775808 -host=http://0.0.0.0:7771
+```
 
+Add a third node:
+
+```bash
+make node2
+# or manually:
 go run nodes/main.go -eokr=4611686018427387904 -host=http://0.0.0.0:7772 -port=7772 -seed=http://0.0.0.0:7770
 ```
 
-# New Node with Data Replication 
-1. At present, system has now reached to point where nodes are decoupled nodes and no need of cluster or coordinator. New nodes can be spun up with details of seed node and can further communicate with other nodes in cluster using gossip protocol.
-2. So far, when new nodes are added into the cluster they takeover the ownership of keys lying in its EndOfKeyRange without ensuring weather it has all of available data of that range to serve reads.
-3. To get to the point where new nodes, when added to the cluster, esure they replicate all the data into their storage before they start serving, I need to introduce concept of state. New node start with 'joining' state. Once new nodes have enough information of cluster from all the gossiping, they change their state to Bootstraping. During this state, they have decided their EndOfKeyRange, it start replicating data from source node. Once replication is complete and all new writes are also available in the new node it changes state to available. It also informs the orginal owner node about it state change to 'available' immediately along with its EndOfKeyRange, so that all the writes that original node is getting will now be redirected to new node. 
-4. Detailed thought process: two nodes A & C in cluster are serving traffic with [0, X] & (X, Z] as their key ranges respectively. A new node B is inserted into cluster. This node has its EndOfKeyRange provided when it started (I'll think about auto calculating EndOfKeyRange later). All new nodes start with state "Joining". New Node B starts with seednode as A. Node B gossips with the other nodes in cluster and gets detailed picture. After sometime, lets say 3 cycles of gossips (or fixed time or so that the number of unique nodes in gossips list doesn't change - that would mean  new node has info of all nodes in cluster), new node B starts next phase "Bootstrapping".  In this phase, new node B request source node, say node C, for all data that should be under the ownership of node B. While this is happening, original owner node C will continue to serve reads and write. While the replication is going on, handling read traffic is trivial. Read traffic can be served from original node. However, handling write traffic isn't as trivial. There are few things that comes to my mind when I think of this challenge. First is dual write. In this while the replication is 
-going on, all the writes that are coming the owner node will be written to owner node's storage as well as new node's storage. This approach is however prone to a race-condition. Example: assume key K with value V1 is stored in owner node. During replication key K and vlaue V1 is read from owner node and is in flight towards the new node but during that time write comes for K with value V2. This write is successfully written to owner node. So owner node contains K, V2. Also, this write is asynchronously sent to new node. It is possible that new key value (K, V2) beats the original request to replicate key K with value V1 such that the new node has value (K, V2) in store then the original replication request with (K, V1) comes, then the new node will have key value of (K, V1) even though replication has succeeded and original node has (K, V2). To handle this, I am thinking along the lines of versions. timestamps are easy solution to this problem, key and value with higher timestamps wins, however, timestamps do not work in real world distributed systems because of timedrift challenges related to time syncrhonization. Therefore, for versions, I am thinking using counters. The very first time a key and value is written it gets version 1. Subsequent writes on that key increases the version counter (there is still the challenge of atomic writes in storage, but that shouldn't as challenging). Lets go through the original example with this versioning system. Original node and (Key K, Value V1, Version 1) in storage. new node request replication. original node and new node starts the replication process. While the replication is going on, read requests are served by original node. When write request comes for (Key K, Value V2) - original node services the write such that (Key K, Value 2, Version 2) is now stored in original nodes storage. Original node also send aync write request of (Key K, Value V2, Version 2) to new node while the original repication request (Key K, Value V1, Version 1) is still in flight. Similar to previous scenario, the original replication request gets delayed and new request of version 2 reaches the new node first. Therefore the original node has (Key K, Value V2, Version 2) in its storage. And then the original request reaches the new node (Key K, Value V1, Version 1). However when it comes to mutating the storage it will fail because the Version 1 is lower than Version 2. With this approach, the original node and new node is guaranteed to eventually converge to same state (unless the request fails).
-5. In the approach outlined above using versions to ensure both new and old node convere to same approach. Replication ensures that old data is consumed and new data is available as it comes. However, I still have figured out when does replication stop.? Lets say the original node is getting bombarded with writes for the key range range it owns and this is the exact reason we are adding additional node to take some load off it. In that scenario, the new writes are comming as replication is happening. To be more concrete, assume replication can handle 1 key/sec. And new writes are coming to original node with new keys which now lie in new nodes key range at the same rate of 1 key/sec. In this scenario - the replication process will go on indefinitely and new node will indefinitely remain unuseable, defeating the purpose of why it was added in the first place. This challenge is easier to handle than the previous one, imo. When new node starts the replication with original node. Any writes that happen the key range out side of new node that lies in the onwership of original node remains unaffected. And there are two possible types of write that can happen on the key range the new node is responsible. Either the write is to mutate the existing key or insert a new key. After the replication has started, any new writes which inserts a new key into the store will directly be redirected to new node. And mutations will be written in original store and new node as well. With this approach. This approach ensures there is finite key space for replication to handle. And once that finite set is replicated, new node has all dataset it should. For reads during replication, the original node does parallel search in original node and old node and return the value with highest version. After replication has completed successfully, the new node updates its status to "Available", informs orignal node immediately. So that original node will now redirect all read and writes traffic to new node. There are certain challenges still in this design. Challenges: if new node fails to complete replication, writes for key, value are lost. It is clear to me, after thinking about it for a bit, that in any strategy, the original node must also maintain the update to date copy of data until the node is finally ready to serve traffic independently. This is because, during the transition, it maybe possible that new node fails to completely take the full ownership and may crash.
-6. There is another strategy of replication. The other strategy of replication involves that new node ask the original node of the data. The original node, when asked for replica of data, starts streaming back point-in-time snapshot of the data. Any changes made since point-in-time snapshot are stored in wal/log. lets think about strategy 1 in more detail. Also, each node has a state, new nodes have Joining. After joining nodes move to state "BOOTSTRAPPING" which means they are gathering data from other sources. Once all the data has been gathered, the state moves to available. Which means it is actively serving traffic. However, what I dont understand in detail is how things work during BOOTSTRAPPING and moving to AVAILABLE state. When node moves from JOINING to BOOTSTRAPPING, it request data from original node. The original node make point-in-time snapshot of the data. Streams it to new node. New node stores that data in its memory. Any changes made after that point-in-time snapshot are preserved in log (wal) file. After the snapshop is replicated, then comes time of handling wal/log. How does that happen? I mean I can replay the changes of wal on the new node but that still doesn't solve the problem that while I am replaying the wal, it will continue to get more changes.
-7. With carefull considerations and thoughts, the approach which is hybrid of previous two approach can work. That is, snapshot replication to get bulk of the data with dual writes. To prevent rance conditions and ensure both nodes converge correctly, key level local versioning can be implemented. Detailed Thought: Existing node A & C handle the traffic with key range of [0, X] & (X, Z]. A new node B wants to join the cluster such that node A, B, C, will handle traffic of range [0, X], (X, Y], & (Y, Z]. When new node B starts it start with the State of JOINING. In this state, node doesn't service any traffic. It does the gossiping and get the topology of the cluster. Once it has confident understanding of cluster, it moves to state called BOOTSTRAPPING. In this state, this node starts replication the data from original node. Original node when asked for replica of data, creates a point-in-time snapshot of the data, and streams it back to the new node. While the replication happens, original node is still getting read and write traffic. Original node continues to serve the read traffic normally. However, for write traffic, it will write the data first to its memory and then update the information in new node. Why is it not async?  Each key & value pair now has a version assigned to it. When original node receives write request, it updates the local version of the key to higher value. For example, if write request  (Key K, Value VA) comes and store already have in memory (Key K, Value VX, Version 1) then after update data-store will have (Key K, Value VA, Version 2). Now this new version of value will be replicated to new node. With this approach, in case of replication delay when an attemp is made to override (Key K, Value VA, Version 2) with (Key K, Value Vx, Version 1) it will fail.
-8. I've narrowed down and decided to move ahead with following solution. New Node request point-in-time snapshot from original node. Original node when reveives the request creates a snapshot of database (which is a interesting problem statement to solve), the snapshot must be created in such a way that read and write traffic isn't affected. Once the snapshot is ready it starts replication. While the replication is happening, original node will continue to service traffic. Reads are handled normally, while for any write request that is received, the orignial node will carry that out with synchronous dual write to new node. When node receives write - it will first write to its storage, increament the version and then replicate the new versiond data to new node. In this, way once replication ends, we can be sure that new node is ready to serve traffic. Once replication ends, Optionally, we may verify the correctness of the replication using merkle tree?. Anyhow, once replication is completed successfully, new node can change it state to Available and start serving traffic. So to implement this, I need to implement snapshots. Also, there are three states a node can be in - "JOINING", "BOOTSTRAPPING", "AVAILABLE". Only in "AVAILABLE" state a node can service traffic. nodes in "BOOTSTRAPPING" state are not considered for any traffic routing. At this point I am thinking, I should implement naive method of snapshotting and then later on implement a better method using LSM Trees
-9. I've added a implementation for replication. In current implementation, new node start with "JOINING" state, start gossip with seed node waits till it have clear picture of all the nodes and then changes its status to "BOOTSRAPPING". As soon as the status changes to bootstrapping, node request replication of point-in-time snapshot from original node. Original node streams the point-in-time snapshot back to the new node. Also, when original node receives the write, it checks for any node that needs these writes as well - (follower node). Original ndoe checks for any follower node by looking at all the nodes it knows about and checks if there is any node which has status "BOOTSTRAPPING" and has EndOfKeyRange just less than original nodes EndOfKeyRange. That is, nodes[ original_node_index - 1].State=BOOTSRAPPING. If that is the case, then current node replicates write to follower node synchronously. This approach, however, has a flaw. The original node only starts replication of new writes/mutation after it gets update of new-nodes state change to "BOOTSTRAPPING" which can be delayed by the very nature of how gossip works. Therefore, it is possible that new writes can be lost between new-node requesting replication and original node starting dual writes. To solve this possibility of lost writes, I am thinking of improving replication strategy. In this new approach, new-node when moves to "BOOTSTRAPPING" state, request point-in-time snapshot from the original node. Original node, when receivest this request, takes the point-in-time snapshot of the db, streams the snapshot back to original events with SSE and any writes/mutations that happen on the datastore which new-node needs to know are also streamed via same conneciton. With this strategy, new-node will receive new-writes from the exact point it requests point-in-time snapshot. Once, the snapshot is streamed back to new-node successfully,it will send event back to new-node informing about susccessful completion of snapshot replication. New node once receiving success events updates it status to "AVAILABLE", which is eventually broadcasted to all nodes, during this time original-node will continue to stream back writes/mutations that happen on it until original node receives the state update of new-node. As the nodes in the cluster learn about new-nodes "AVAILABLE" status, they will start routing required traffic away from original node to new node. Eventually there will come a time when orignial node will not receive any request for mutaions/write which belong to new-node and there will be no events to send back to new-node. Once that state  arises, it will be safe to succesfully close the original replication request connection, as new-node is handling all the traffic. 
-10. So far, I've added api endpoint /v1/data/replication which streams point-in-time snapshots and liveMutations. This endpoint closes connections after snapshot replication is completed, new-node state is "AVAILABLE" and no write/mutations are streamed in last 10 seconds. With api being ready, api consumer part is yet to improved. I need to go over the entire lifecycle of node from "JOINING" to "BOOTSTRAPPING" to "AVAILABLE". Also, need to ensure that when node receives "snapshot_replication_complete" event, it ensured it state is changed to "AVAILABLE", after receiving "live_mutation_complete" (request connection should be closed) the new node is serving all new traffic.
-11. Replication implementation is done. new node request replication, it receives point-in-time snapshot and all the live mutations. When the point-in-time snapshot replication is complete, new node changes it state to "AVAILABLE" which is eventually propagated to other nodes in cluster. As the nodes receive this updated state, the read and write traffic is directed to new node. Eventually original node stops getting all traffic for data that belongs to new-node. When that happens original node successfully closes the replication.
-12. In the current implementation of replication so many things have scope of improvement. At this point, point-in-time snapshot stops all writes during snapshot creation. This can be improved by LSM Tree approach. Datastore stores all the past versions of the key. So, if a particular key is updated a lot, it essentially, maintains all past versions. I've not thought of any approach to handle this yet. Data store after replication doesn't remove the keys which aren't required anymore. I guess this can be improved by LSM tree. All the data at present in in-memory, which could be fine for being Distributed Hash Table, but I want it to be rebootable. Nodes do not have replicas, I am interested in concept of replicas here. Replicas here can help take read traffic and in cassandra any replica node (nodes which own the key range) can take the write. And quorom can be used to tune consistency levels ( this is a interested problem statement to solve).
+## 📡 API Usage
+
+### Store Data
+```bash
+curl -X POST http://localhost:7770/v1/data \
+  -H "Content-Type: application/json" \
+  -d '{"key": "mykey", "value": "myvalue"}'
+```
+
+### Retrieve Data
+```bash
+curl http://localhost:7770/v1/data/mykey
+```
+
+### Check Node Status
+```bash
+curl http://localhost:7770/v1/node/detail
+```
+
+### View Gossip Information
+```bash
+curl http://localhost:7770/v1/gossip
+```
+
+## 🔍 Understanding the Implementation
+
+### Consistent Hashing
+Each node owns a portion of the 64-bit hash space. The `EndOfKeyRange` parameter defines the upper bound of keys a node handles.
+
+### Gossip Protocol
+Nodes periodically exchange information about cluster membership, ensuring all nodes have a consistent view of the topology.
+
+### Replication Strategy
+When a new node joins:
+1. It enters JOINING state and gossips to learn the cluster
+2. Transitions to BOOTSTRAPPING and requests data replication
+3. Receives point-in-time snapshots + live mutations
+4. Becomes AVAILABLE and starts serving traffic
+
+## 🎯 What I've Learned
+
+Through building this system, I've gained hands-on experience with:
+
+- Implementing consistent hashing algorithms from scratch
+- Building gossip protocols for distributed node discovery
+- Handling data replication in live systems with ongoing writes
+- Managing node state transitions during cluster changes
+- Understanding the core principles behind Cassandra's architecture
+
+## 📚 Documentation
+
+- [Design Thoughts](learnings/design_thoughts.md) - My detailed thought process and implementation decisions
+- [Consistent Hashing](learnings/consistent_hashing.md) - Deep dive into the hashing algorithm and my learnings
+- [API Specifications](api/) - Complete API documentation
+
+## 🤝 Contributing
+
+I'm open to contributions and feedback! If you're learning distributed systems too, feel free to:
+
+- Try out the code and share your findings
+- Suggest improvements or point out issues
+- Add features you're interested in exploring
+- Ask questions about the implementation
+
+## 📄 License
+
+MIT License - feel free to use this for your own learning and experimentation.
+
+## 🙏 Acknowledgments
+
+This project is my attempt to understand the fascinating world of distributed systems. Huge thanks to the Cassandra community and the broader distributed systems field for the inspiration and knowledge shared openly.
+
+---
+
+**Want to learn distributed systems too?** Start with `make seed` and see how the nodes discover and replicate with each other!</content>
+<parameter name="filePath">/Users/amangoyal/code/distributed_storage_nodes/readme.md
