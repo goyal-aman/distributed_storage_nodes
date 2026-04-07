@@ -177,5 +177,4 @@ This project is my attempt to understand the fascinating world of distributed sy
 
 ---
 
-**Want to learn distributed systems too?** Start with `make seed` and see how the nodes discover and replicate with each other!</content>
-<parameter name="filePath">/Users/amangoyal/code/distributed_storage_nodes/readme.md
+**Want to learn distributed systems too?** Start with `make seed` and see how the nodes discover and replicate with each other!
