@@ -7,7 +7,9 @@ type Store interface {
 	// Put store value againt key
 	Put(key string, value interface{}) error
 
-	Snapshot(opts ...Opts) (Snapshot, PostWriteHookCncl)
+	PutRaw(key string, val any, version *uint64) error
+
+	Snapshot(filter KeyFilter, opts ...Opts) (Snapshot, PostWriteHookCncl)
 
 	Size() int
 }

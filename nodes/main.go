@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
+	"github.com/goyal-aman/distributed-storage-nodes/gossip"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	apiclient "github.com/goyal-aman/distributed-storage-nodes/nodes/api_client"
 	"github.com/goyal-aman/distributed-storage-nodes/store"
@@ -27,7 +28,6 @@ const (
 )
 
 var (
-	storage   = map[string]interface{}{}
 	storagev2 = store.NewDataStore()
 )
 
@@ -49,7 +49,6 @@ var (
 
 var (
 	updateGossipEndpoint = "/v1/gossip"
-	nodeDataEndpoint     = "/v1/data"
 )
 
 func init() {
@@ -95,15 +94,18 @@ type Node struct {
 	Id            string
 	Host          string
 	EndOfKeyRange uint64
-	Gossip        map[string]types.Gossip
-	LastUpdate    time.Time
-	State         types.NodeState
+
+	GossipV2 *gossip.Gossip[string, types.NodeGossip]
+	// Gossip   map[string]types.NodeGossip
+
+	LastUpdate time.Time
+	State      types.NodeState
 
 	// isReadyForBootstrapping
 	gossipMeta []int
 }
 
-func (n Node) XEndOfKeyRange() uint64 {
+func (n *Node) XEndOfKeyRange() uint64 {
 	return n.EndOfKeyRange
 }
 
@@ -113,7 +115,7 @@ func (n Node) XEndOfKeyRange() uint64 {
 // if seed nodes are provided but due to some error they are not available
 // nodes are without seeds (and gossip)
 func NewNode() *Node {
-	gossipNodes := map[string]types.Gossip{}
+	gossipNodesV2 := gossip.NewGossip[string, types.NodeGossip]()
 	if len(GVar_SeedNodes) > 0 {
 		for _, sNode := range GVar_SeedNodes {
 			nodeMeta, err := apiclient.GetNodeMeta(sNode)
@@ -135,33 +137,42 @@ func NewNode() *Node {
 			id := nodeMeta["Id"].(string)
 			host := nodeMeta["Host"].(string)
 			state := types.NodeState(nodeMeta["State"].(string))
-			a := types.Gossip{
+			a := types.NodeGossip{
 				Id:            id,
 				Host:          host,
 				EndOfKeyRange: endOfKeyRange,
 				LastUpdate:    t,
 				State:         state,
 			}
-			gossipNodes[id] = a
+			gossipNodesV2.Upsert(id, a)
+			// gossipNodes[id] = a
 		}
-		slog.Info("seed node found", "seed_node", gossipNodes)
+		slog.Info("seed node found", "seed_node", gossipNodesV2)
 	}
 
 	// all node starts with "JOINING" state in existing
 	//  cluster. For new clusters, nodes are immediately available
 	nodeState := types.JOINING
-	if len(gossipNodes) == 0 {
+	if gossipNodesV2.Size() == 0 {
 		nodeState = types.AVAILABLE
 	}
 
 	node := &Node{
 		Id:            uuid.New().String(),
 		Host:          GVar_Host,
-		Gossip:        gossipNodes,
+		GossipV2:      gossipNodesV2,
 		EndOfKeyRange: GVar_EndOfKeyRange,
 		LastUpdate:    time.Now(),
 		State:         nodeState,
 	}
+
+	node.GossipV2.Upsert(node.Id, types.NodeGossip{
+		Id:            node.Id,
+		Host:          node.Host,
+		EndOfKeyRange: node.EndOfKeyRange,
+		LastUpdate:    time.Now(),
+		State:         node.State,
+	})
 
 	slog.Info("node created", "node", node)
 	return node
@@ -184,7 +195,12 @@ func main() {
 }
 
 func initRouter(node *Node) *gin.Engine {
-	router := gin.Default()
+	router := gin.New()
+
+	// router.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+	// 	SkipPaths: []string{"/v1/data"},
+	// }))
+
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"message": "pong",
@@ -199,7 +215,6 @@ func initRouter(node *Node) *gin.Engine {
 
 	// v1/node/
 	nodev1.GET("", node.nodemeta)
-	nodev1.POST("init", node.initNode)
 
 	// v1/data/
 	datav1 := routerv1.Group("data")
@@ -208,7 +223,6 @@ func initRouter(node *Node) *gin.Engine {
 
 	// v1/data/replicate
 	replicatev1 := datav1.Group("replicate")
-	replicatev1.POST("", node.replicateWrite)
 	replicatev1.GET("", node.startReplication)
 
 	// v1/gossip
@@ -234,7 +248,7 @@ func (n *Node) nodemeta(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"Id":            n.Id,
 		"Host":          n.Host,
-		"Gossip":        n.Gossip,
+		"Gossip":        n.GossipV2.Read(),
 		"EndOfKeyRange": n.EndOfKeyRange,
 		"LastUpdate":    n.LastUpdate,
 		"State":         n.State,
@@ -246,8 +260,8 @@ func (n *Node) changeStateToBootStrappingIfReady() bool {
 		return false
 	}
 	slog.Info("checking for bootstrapping")
-	gossip := n.Gossip
-	n.gossipMeta = append(n.gossipMeta, len(gossip))
+	numNodes := n.GossipV2.Size()
+	n.gossipMeta = append(n.gossipMeta, numNodes)
 
 	if len(n.gossipMeta) >= 3 &&
 		n.gossipMeta[len(n.gossipMeta)-1] == n.gossipMeta[len(n.gossipMeta)-2] &&
@@ -264,10 +278,12 @@ func (n *Node) changeStateToBootStrappingIfReady() bool {
 func (n *Node) handleBootstrapping() {
 	// find source node of data
 	// find node just to the right
-	gossipNodes := helper.MapToArr(n.Gossip)
+	gossipNodes := helper.MapToArr(n.GossipV2.Read())
+
 	nextNode, err := helper.GetNodeByToken(gossipNodes, n.EndOfKeyRange+1)
 	if err != nil {
 		slog.Error("cannot find next node in bootstrapping", "err", err)
+		return
 	}
 	fmt.Println(nextNode)
 
@@ -292,32 +308,37 @@ func (n *Node) handleBootstrapping() {
 	//  will redirect all related traffic to new-node instead of original node.
 	// which means original node will eventually reach a point where it has no mutations/writes
 	// to stream back to. At this point, the replication stream request can be closed successfully.
-	apiclient.RequestSnapshot(nextNode.Host)
-	n.State = types.AVAILABLE
-	go n.BroadcastGossip(time.Now()) // inform other nodes of state change immediate
-	slog.Info("updated status to available")
 
-	// request snapshot
-	// update snapshot
-	// change to available
-}
+	slog.Info("requesting replica")
 
-// Depricated
-func (n *Node) initNode(c *gin.Context) {
-	details := map[string]interface{}{}
-	if err := c.ShouldBindJSON(&details); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	streamCh, err := apiclient.RequestReplica(nextNode.Host, n.Id)
+	if err != nil {
+		slog.Error("error in requesting replica", "err", err)
 		return
 	}
+	slog.Info("consuming replication stream")
+	for ch := range streamCh {
+		switch ch.EType {
+		case types.SnapshotReplicationEType:
+			event := ch.SnapshotReplicationEvent
+			for _, v := range event.Values {
+				storagev2.PutRaw(event.Key, v.Value, &v.Version)
+			}
+		case types.SnapshotReplicationCompleteEType:
+			slog.Info("snapshot replication completed, updating state to available")
+			n.State = types.AVAILABLE
 
-	id := details["Id"].(string)
-	host := details["Host"].(string)
-	endOfKeyRange := uint64(details["EndOfKeyRange"].(float64))
+		case types.LiveMutationReplicationEType:
+			event := ch.LiveMutationReplicationEvent
+			storagev2.PutRaw(event.Key, event.Value, &event.Version)
+		case types.LiveMutationReplicationCompleteEType:
+			slog.Info("live mutations completed")
+		default:
+			slog.Warn("unknown event type in replication stream")
+		}
+	}
 
-	n.Id = id
-	n.Host = host
-	n.EndOfKeyRange = endOfKeyRange
-	slog.Info("updated node details", "node", n)
+	slog.Info("replication completed,serving traffic")
 }
 
 // BroadcastGossip
@@ -329,35 +350,31 @@ func (n *Node) BroadcastGossip(_ time.Time) {
 	if n.Id == "" {
 		return
 	}
-	payload := n.Gossip
 
-	// update for current node
-	// dont do g := n.Gossip[n.Id]; g.LastUpdate=time.Now(); n.Gossip[n.Id]=g
-	// because it is possible that n.Gossip may not contain n.Id
-	now := time.Now()
-	n.LastUpdate = now
-
-	n.Gossip[n.Id] = types.Gossip{
+	// update currNode lastUpdate
+	currNode := types.NodeGossip{
 		Id:            n.Id,
 		Host:          n.Host,
 		EndOfKeyRange: n.EndOfKeyRange,
-		LastUpdate:    n.LastUpdate,
+		LastUpdate:    time.Now(),
 		State:         n.State,
 	}
+	n.GossipV2.Upsert(n.Id, currNode)
 
-	gossips := make([]types.Gossip, len(payload))
+	gossipMap := n.GossipV2.Read()
+	gossipArr := make([]types.NodeGossip, len(gossipMap))
 	idx := 0
-	for _, val := range payload {
-		gossips[idx] = val
+	for _, val := range gossipMap {
+		gossipArr[idx] = val
 		idx++
 	}
 
-	for id, g := range n.Gossip {
+	for id, g := range gossipMap {
 		if id == n.Id {
 			continue
 		}
-		slog.Debug("Sending gossips", "from", *fPort, "to", g.Host, "data", gossips)
-		sendGossip(g.Host, helper.ToBytesReader(gossips))
+		slog.Debug("Sending gossips", "from", *fPort, "to", g.Host, "data", gossipArr)
+		sendGossip(g.Host, helper.ToBytesReader(gossipArr))
 	}
 	slog.Debug("Broadcast success")
 
@@ -380,7 +397,7 @@ func sendGossip(destHost string, bytesReader *bytes.Reader) {
 // updateGossipNodes
 // updates gossip using lists of gossips from clients
 func (n *Node) updateGossipNodes(c *gin.Context) {
-	body := []types.Gossip{}
+	body := []types.NodeGossip{}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "something wrong with body",
@@ -389,31 +406,26 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 		return
 	}
 
-	beforeUpdateGossip := logIDAndTime2(n.Gossip)
-	receviedUpdates := logIDAndTime(body)
+	// beforeUpdateGossip := logIDAndTime2(n.Gossip)
+	// receviedUpdates := logIDAndTime(body)
 
 	for _, g := range body {
-		val, exist := n.Gossip[g.Id]
+		val, exist := n.GossipV2.Get(g.Id)
 		if exist {
 			if g.LastUpdate.After(val.LastUpdate) {
 				val.LastUpdate = g.LastUpdate
 				val.State = g.State
-				n.Gossip[g.Id] = val
+				n.GossipV2.Upsert(g.Id, *val)
 			}
-
 		} else {
-			n.Gossip[g.Id] = g
+			n.GossipV2.Upsert(g.Id, g)
 		}
 	}
-	afterUpdateGossip := logIDAndTime2(n.Gossip)
-
-	slog.Debug("receive gossip updates", "curr_host", n.Host, "received_updates", receviedUpdates,
-		"before_updates", beforeUpdateGossip, "after_updates", afterUpdateGossip)
 
 	n.changeStateToBootStrappingIfReady()
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": n.Gossip,
+		"message": n.GossipV2.Read(),
 	})
 }
 
@@ -421,25 +433,8 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 // return the list of gossips
 func (n *Node) getGossipNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"message": n.Gossip,
+		"message": n.GossipV2.Read(),
 	})
-}
-func logIDAndTime2(m map[string]types.Gossip) map[string]time.Time {
-	m2 := map[string]time.Time{}
-	for _, v := range m {
-		m2[v.Host] = v.LastUpdate
-	}
-	return m2
-
-}
-
-func logIDAndTime(g []types.Gossip) map[string]time.Time {
-	m := map[string]time.Time{}
-	for _, gt := range g {
-		m[gt.Host] = gt.LastUpdate
-	}
-	return m
-
 }
 
 // handlePost
@@ -455,7 +450,7 @@ func (n *Node) handlePost(c *gin.Context) {
 		return
 	}
 
-	ar := helper.MapToArr(n.Gossip)
+	ar := helper.MapToArr(n.GossipV2.Read())
 	sort.Slice(ar, func(a, b int) bool {
 		// increasing order in EndOfKeyRange
 		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
@@ -465,7 +460,6 @@ func (n *Node) handlePost(c *gin.Context) {
 	value := body["value"]
 
 	token := helper.HashKey(key, Total_Slots)
-	slog.Info("handle post", "sorted_gossips", ar, "key_token", token)
 	ownerNode, err := helper.GetNode(ar, token)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -500,7 +494,6 @@ func (n *Node) handlePost(c *gin.Context) {
 	// with EndOfKeyRange just less than curr node.EndOfKeyRange
 	// and State == BootStrapping then this write needs to be replicated there.
 	// Later on I'll check whether this can be achieved by raft algo
-	slog.Info("handle post", "body", body)
 	if err := storagev2.Put(key, value); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
@@ -508,15 +501,15 @@ func (n *Node) handlePost(c *gin.Context) {
 		return
 	}
 
-	if followerNode := helper.GetNodeForReplication(ar, n.EndOfKeyRange); followerNode != nil {
-		err = apiclient.ReplicateWrite(followerNode.Host, key, value)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": fmt.Errorf("%w, error replicating write to bootstraping node", err),
-			})
-			return
-		}
-	}
+	// if followerNode := helper.GetNodeForReplication(ar, n.EndOfKeyRange); followerNode != nil {
+	// 	err = apiclient.ReplicateWrite(followerNode.Host, key, value)
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{
+	// 			"error": fmt.Errorf("%w, error replicating write to bootstraping node", err),
+	// 		})
+	// 		return
+	// 	}
+	// }
 
 	// everything success
 	c.JSON(http.StatusOK, gin.H{
@@ -525,62 +518,12 @@ func (n *Node) handlePost(c *gin.Context) {
 	})
 }
 
-// TODO implement replicateWrite
-// replicateWrite
-// it receives write from leader node to replicate the write
-// the replicated write is verified to ensure that current
-// node is in "BOOTSTRAPPING" phase and token ( hash(key)->token )
-// is indeed belongs to current node
-// Note
-// currently I am not a fan of how dual writes are implemented
-// after the current node's state changes from JOINING to BOOTSTRAPPING
-func (n *Node) replicateWrite(c *gin.Context) {
-	body := map[string]interface{}{}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "something wrong with body",
-			"err":     err.Error(),
-		})
-		return
-	}
-
-	key, ok := body["key"].(string)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid type of 'key'. 'key' should be string",
-		})
-		return
-	}
-
-	value, exist := body["value"]
-	if !exist {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "value is nil, value must exist",
-		})
-		return
-	}
-
-	if err := storagev2.Put(key, value); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "OK",
-	})
-}
-
 func (n *Node) handleGet(c *gin.Context) {
 	key := c.Query("key")
 	slog.Info("handle get", "key", key)
 
-	ar := helper.MapToArr(n.Gossip)
+	ar := helper.MapToArr(n.GossipV2.Read())
 	helper.SortNodeInPlace(ar)
-	// sort.Slice(ar, func(a, b int) bool {
-	// 	// increasing order in EndOfKeyRange
-	// 	return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
-	// })
 
 	token := helper.HashKey(key, Total_Slots)
 	ownerNode, err := helper.GetNode(ar, token)
@@ -626,7 +569,7 @@ func (n *Node) nodeForKey(c *gin.Context) {
 	key := c.Query("key")
 	hash := helper.HashKey(key, coordinator.Total_Slots)
 
-	ar := helper.MapToArr(n.Gossip)
+	ar := helper.MapToArr(n.GossipV2.Read())
 	sort.Slice(ar, func(a, b int) bool {
 		// increasing order in EndOfKeyRange
 		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
@@ -644,22 +587,21 @@ func (n *Node) nodeForKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"node": node,
 	})
-
 }
 
 func (n *Node) startReplication(c *gin.Context) {
-
+	slog.Info("in start replication")
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("Transfer-Encoding", "chunked")
 
 	// for replicating snapshot
-	replSSCh := make(chan []interface{})
+	replSSCh := make(chan types.SnapshotReplicationEvent)
 
 	// for replicating writes/mutations that come in
 	// during replication
-	replLiveMutationChan := make(chan []interface{})
+	replLiveMutationChan := make(chan types.LiveMutationReplicationEvent)
 
 	// used to verify state of sourceid
 	// if sourceid.state is AVAILABLE and there
@@ -681,23 +623,33 @@ func (n *Node) startReplication(c *gin.Context) {
 	// if true, it means live mutations are completed
 	isLiveMutationCompleteEventSent := false
 
+	// periodically check if replication is completed
+	// once completed, callPostWriteHook
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
 		for range ticker.C {
-			sourceNode, exist := n.Gossip[sourceNodeId]
+			sourceNode, exist := n.GossipV2.Get(sourceNodeId)
 			if !exist {
 				continue
 			}
 			sourceState := sourceNode.State
+
+			// liveMutation can only be stopped after
+			// replication is completed and source node
+			// is "AVAILABLE" in state, and last mutation
+			// sent was over 10 second ago. 10 second is
+			// arbitary choice.
 			if isReplSnapshotCompletionEventSent &&
-				sourceState == types.AVAILABLE &&
-				time.Now().After(lastLiveMutationSentTimeStamp.Add(10*time.Second)) {
+				sourceState == types.AVAILABLE {
 
 				close(replLiveMutationChan)
 				postWriteHookReset()
 				ticker.Stop()
 				slog.Info("Live Mutation Completed")
 				break
+			} else {
+				slog.Info("live mutaion continuing", "isReplSnapshotCompletionEventSent", isReplSnapshotCompletionEventSent,
+					"sourceState", sourceState, "lastMutationTimeStampDiff", time.Since(lastLiveMutationSentTimeStamp).Seconds())
 			}
 		}
 	}()
@@ -707,39 +659,69 @@ func (n *Node) startReplication(c *gin.Context) {
 		defer close(replSSCh)
 		numKeys := storagev2.Size()
 		if numKeys == 0 {
+			postWriteHookReset = func() { slog.Info("calling defualt postwrite hook") }
 			return
+		}
+
+		sourceNode, exist := n.GossipV2.Get(sourceNodeId)
+		if !exist {
+			slog.Error("snapshot replication not started, couldn't find source node in gossips", "sourceNodeId", sourceNodeId)
+			return
+		}
+		keyFilter := func(key string) bool {
+			token := helper.HashKey(key, Total_Slots)
+			return token <= sourceNode.EndOfKeyRange
 		}
 
 		// set postwrite hook such that new mutations/writes
 		// are passed to replLiveMutationch channel
-		var snapshot store.Snapshot
-		snapshot, postWriteHookReset = storagev2.Snapshot(
+		snapshot, cncl := storagev2.Snapshot(
+			keyFilter,
 			store.WithPostWriteHook(func(key string, val any, version uint64) {
-				replLiveMutationChan <- []interface{}{key, val, version}
+				token := helper.HashKey(key, Total_Slots)
+				if token <= sourceNode.EndOfKeyRange {
+					body := types.LiveMutationReplicationEvent{
+						Etype:   types.LiveMutationReplicationEType,
+						Key:     key,
+						Value:   val,
+						Version: version,
+					}
+					replLiveMutationChan <- body
+				}
 			}),
 		)
-
+		postWriteHookReset = cncl
+		slog.Info("Assigned postWriteHook", "hook", postWriteHookReset)
+		slog.Info("complete source snapshot", "snapshot", snapshot)
 		for key, values := range snapshot {
 			// at present values which is array of all versions
 			// is returned, possibly in future, it can be looked
 			// upon if it can be improved
-			replSSCh <- []interface{}{key, values}
+			body := types.SnapshotReplicationEvent{
+				Etype:  types.SnapshotReplicationEType,
+				Key:    key,
+				Values: values,
+			}
+			replSSCh <- body
 
 			// sleep added only to increase time of replication
 			// during testing I'm not able to generate enough
 			// data to keep replication going on for meaningful
 			// duration
-			time.Sleep(100 * time.Millisecond)
+			// time.Sleep(100 * time.Millisecond)
 		}
+		slog.Info("all snapshot events sent")
 	}()
 
 	// c.Stream takes a function that returns a boolean.
 	// Returning true keeps the stream open; false closes it.
 	c.Stream(func(w io.Writer) bool {
+		slog.Info("in replication stream")
 
 		// this state is reaches after snapshot replication is complete
 		// and liveMutations are not more being replicated
 		if isLiveMutationCompleteEventSent && isReplSnapshotCompletionEventSent {
+			slog.Info("replication stream complete")
 			return false
 		}
 
@@ -752,9 +734,7 @@ func (n *Node) startReplication(c *gin.Context) {
 			if !ok {
 				replSSCh = nil
 				if !isReplSnapshotCompletionEventSent {
-					c.SSEvent("message", gin.H{
-						"type": "replication_complete",
-					})
+					c.SSEvent("message", types.SnapshotReplicationCompleteEvent)
 					isReplSnapshotCompletionEventSent = true
 				}
 				slog.Info("snapshot replication completed")
@@ -762,11 +742,8 @@ func (n *Node) startReplication(c *gin.Context) {
 				// snapshotEvent is []interface{key_str, value_interface, version_uint64}
 				// after channel is closed, reading from it
 				// returns zero value.
-				c.SSEvent("message", gin.H{
-					"type":   "replication",
-					"key":    snapshotEvent[0],
-					"values": snapshotEvent[1],
-				})
+				c.SSEvent("message", snapshotEvent)
+				slog.Info("sent snapshotevent", "snapshot_event", snapshotEvent)
 				return true
 			}
 
@@ -774,9 +751,7 @@ func (n *Node) startReplication(c *gin.Context) {
 			if !ok {
 				replLiveMutationChan = nil
 				if !isLiveMutationCompleteEventSent {
-					c.SSEvent("message", gin.H{
-						"type": "live_mutation_complete",
-					})
+					c.SSEvent("message", types.LiveMutationReplicationCompleteEvent)
 					isLiveMutationCompleteEventSent = true
 				}
 				slog.Info("live mutation replication completed")
@@ -788,11 +763,8 @@ func (n *Node) startReplication(c *gin.Context) {
 				// liveMutationsEvent is []interface{key_str, value_interface, version_uint64}
 				// after channel is closed, reading from it
 				// returns zero value.
-				c.SSEvent("message", gin.H{
-					"type":   "live_mutation",
-					"key":    liveMutationsEvent[0],
-					"values": liveMutationsEvent[1],
-				})
+				c.SSEvent("message", liveMutationsEvent)
+				slog.Info("stream live mutation")
 				return true
 			}
 		}
@@ -802,48 +774,7 @@ func (n *Node) startReplication(c *gin.Context) {
 }
 
 func (n *Node) getSnapShot(c *gin.Context) {
-	// c.Writer.Header().Set("Content-Type", "text/event-stream")
-	// c.Writer.Header().Set("Cache-Control", "no-cache")
-	// c.Writer.Header().Set("Connection", "keep-alive")
-	// c.Writer.Header().Set("Transfer-Encoding", "chunked")
-	// ch := make(chan []interface{}, 0)
-
-	// go func() {
-	// 	defer close(ch)
-	// 	if len(storagev2.Snapshot()) > 0 {
-	// 		for key, value := range storagev2.Snapshot() {
-	// 			ch <- []interface{}{key, value}
-	// 			time.Sleep(100 * time.Millisecond)
-	// 		}
-
-	// 	}
-	// }()
-
-	// c.Stream takes a function that returns a boolean.
-	// Returning true keeps the stream open; false closes it.
-	// c.Stream(func(w io.Writer) bool {
-
-	// 	// Send an event with a name and data
-	// 	select {
-	// 	case <-c.Request.Context().Done():
-	// 		slog.Error("connection closed before snapshot replication completed")
-	// 	case event := <-ch:
-	// 		slog.Info("sending event ", "event", event)
-	// 		if len(event) == 0 {
-	// 			return false
-	// 		} else {
-	// 			c.SSEvent("message", gin.H{
-	// 				"key":   event[0],
-	// 				"valye": event[1],
-	// 			})
-	// 			return true
-
-	// 		}
-	// 	}
-
-	// 	return true // Keep streaming
-	// })
-	snapshot, cancelHook := storagev2.Snapshot()
+	snapshot, cancelHook := storagev2.Snapshot(store.AllKeys)
 	defer cancelHook()
 	c.JSON(http.StatusOK, gin.H{
 		"value": snapshot,

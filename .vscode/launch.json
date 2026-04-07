@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "debug node1",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/nodes",
+            "args": [
+                "-port=7771",
+                "-seed=http://0.0.0.0:7770",
+                "-eokr=9223372036854775808",
+                "-host=http://0.0.0.0:7771"
+            ],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

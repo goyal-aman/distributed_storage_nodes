@@ -2,6 +2,7 @@ package store
 
 import (
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/goyal-aman/distributed-storage-nodes/types"
@@ -9,6 +10,12 @@ import (
 
 // Compile time check
 var _ Store = (*DataStore)(nil)
+
+type KeyFilter func(key string) bool
+
+var (
+	AllKeys = func(key string) bool { return true }
+)
 
 type Opts func(*DataStore)
 type Snapshot map[string][]types.StoreEntry
@@ -58,11 +65,16 @@ func (d *DataStore) Get(key string) (any, error) {
 	return nil, nil
 }
 
+
 // Put
 // store val against the key. if key already exist in the store
 // then find the most recent version and add new entry with most_recent_version+1
 // (key, val, most_recent_version+1)
 func (d *DataStore) Put(key string, val any) error {
+	return d.PutRaw(key, val, nil)
+}
+
+func (d *DataStore) PutRaw(key string, val any, version *uint64) error {
 	d.mu.Lock()
 
 	entries, exist := d.store[key]
@@ -75,12 +87,20 @@ func (d *DataStore) Put(key string, val any) error {
 	} else {
 		mostRecentEntry := entries[len(entries)-1]
 		newVersion = mostRecentEntry.Version + 1
+		if version != nil {
+			newVersion = *version
+		}
 		entries = append(entries, types.StoreEntry{
 			Value:   val,
 			Version: newVersion,
 		})
 		d.store[key] = entries
 	}
+	// I know its not optimised
+	ar := d.store[key]
+	sort.Slice(d.store[key], func(a, b int) bool {
+		return ar[a].Version < ar[b].Version
+	})
 
 	// hook runs out side the lock.
 	// why? because hook is user supplied implementation.
@@ -101,7 +121,10 @@ func (d *DataStore) Put(key string, val any) error {
 // when snapshot is requested, it also has option to set post write hook.
 // when post write hook is set, all new changes are streamed to postWriteHook.
 // if a change is streamed via postWriteHook, it may also be present is Snapshot
-func (d *DataStore) Snapshot(opts ...Opts) (Snapshot, PostWriteHookCncl) {
+func (d *DataStore) Snapshot(
+	filter KeyFilter,
+	opts ...Opts,
+) (Snapshot, PostWriteHookCncl) {
 	// need write lock to populate postWriteHook
 	// after unlock all the new writes are being
 	// replicated
@@ -124,6 +147,9 @@ func (d *DataStore) Snapshot(opts ...Opts) (Snapshot, PostWriteHookCncl) {
 	// create deep copy of existing store
 	deepCopy := make(map[string][]types.StoreEntry, len(d.store))
 	for k, v := range d.store {
+		if !filter(k) {
+			continue
+		}
 		newSlice := make([]types.StoreEntry, len(v))
 		for idx, item := range v {
 			newSlice[idx] = types.StoreEntry{Value: item.Value, Version: item.Version}
@@ -145,21 +171,3 @@ func WithPostWriteHook(hook func(key string, val any, version uint64)) Opts {
 		d.postWriteHook = hook
 	}
 }
-
-// // Snapshot return point-in-time view of store
-// // return is map[string][]types.StoreEntry
-// func (d *DataStore) Snapshot() map[string][]types.StoreEntry {
-// 	d.mu.RLock()
-// 	defer d.mu.RUnlock()
-
-// 	// create deep copy of existing store
-// 	deepCopy := make(map[string][]types.StoreEntry, len(d.store))
-// 	for k, v := range d.store {
-// 		newSlice := make([]types.StoreEntry, len(v))
-// 		for idx, item := range v {
-// 			newSlice[idx] = types.StoreEntry{Value: item.Value, Version: item.Version}
-// 		}
-// 		deepCopy[k] = newSlice
-// 	}
-// 	return deepCopy
-// }

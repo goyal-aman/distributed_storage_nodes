@@ -122,7 +122,7 @@ func (c *Cluster) BroadCastNode(newNode types.StorageNode) {
 
 func sendGossip(newNode, oldNode types.StorageNode) {
 
-	payload := []types.Gossip{
+	payload := []types.NodeGossip{
 		{
 			Id:            newNode.Id,
 			Host:          newNode.Host,
@@ -165,7 +165,6 @@ func replication(dNode, sNode types.StorageNode) {
 func (c *Cluster) GetNode(key uint64) (*types.StorageNode, error) {
 	return helper.GetNode(c.nodes, key)
 }
-
 
 // FindInsertIndex find the index in the array where token should be inserted such that
 // array remains sorted in increasing order on node.endOfKeyRange

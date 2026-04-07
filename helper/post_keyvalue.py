@@ -9,6 +9,11 @@ def main():
         return
 
     n = int(sys.argv[1])
+    
+    delay_ms = 0
+    if len(sys.argv) > 2:
+        delay_ms = int(sys.argv[2])
+
     url = "http://localhost:7770/v1/data"
 
     for i in range(1, n + 1):
@@ -32,7 +37,7 @@ def main():
                 print(f"[{i}] Status: {resp.status}, Response: {body}")
         except Exception as e:
             print(f"[{i}] Error: {e}")
-
+        time.sleep(delay_ms / 1000)
 if __name__ == "__main__":
     # python3 post_keyvalue.py 10
     main()

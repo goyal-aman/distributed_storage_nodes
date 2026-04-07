@@ -2,6 +2,7 @@ package apiclient
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,11 +19,11 @@ import (
 const (
 	nodeMetaEndpoint           = "/v1/node"
 	postAndGetKeyValueEndpoint = "/v1/data"
-	postReplicateWrite         = "/v1/data/replicate"
+	getReplicateWrite          = "/v1/data/replicate"
 	getSnapShot                = "/v1/snapshot"
 )
 
-func PostKeyValue(node types.Gossip, key string, value any) error {
+func PostKeyValue(node types.NodeGossip, key string, value any) error {
 	payload := map[string]interface{}{
 		"key":   key,
 		"value": value,
@@ -41,7 +42,7 @@ func PostKeyValue(node types.Gossip, key string, value any) error {
 	return nil
 }
 
-func GetKeyValue(node types.Gossip, key string) (map[string]interface{}, error) {
+func GetKeyValue(node types.NodeGossip, key string) (map[string]interface{}, error) {
 
 	resp, perr := http.Get(node.Host + postAndGetKeyValueEndpoint + fmt.Sprintf("?key=%s", key))
 	if perr != nil {
@@ -104,21 +105,75 @@ func RequestSnapshot(host string) (map[string]interface{}, error) {
 
 }
 
-func ReplicateWrite(host string, key string, value any) error {
-	payload := map[string]interface{}{
-		"key":   key,
-		"value": value,
+func RequestReplica(host, sourceid string) (chan types.ReplicationStream, error) {
+
+	resp, gerr := http.Get(host + getReplicateWrite + "?sourceid=" + sourceid)
+	if gerr != nil {
+		slog.Error("err in request replicate", "host", host, "sourceid", sourceid)
+		return nil, errors.Join(err.ErrRequestingReplica, gerr)
 	}
 
-	resp, perr := http.Post(host+postReplicateWrite, "application/json", helper.ToBytesReader(payload))
-	if perr != nil {
-		slog.Error("err replicate post key value", "dest_host", host, "err", perr)
-		// return fmt.Errorf("err occured while send init node", err)
-		return errors.Join(err.ErrReplicatePostKeyValue, perr)
-	}
+	streamChan := make(chan types.ReplicationStream, 1)
 
-	respBytes := make([]byte, 0)
-	resp.Body.Read(respBytes)
-	slog.Debug("send node success")
-	return nil
+	go func() {
+		defer close(streamChan)
+		reader := bufio.NewReader(resp.Body)
+		for {
+			// Read line by line until a double newline (\n\n) is found
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				fmt.Println("Connection closed:", err)
+				break
+			}
+
+			// SSE lines start with "data: ", "event: ", or "id: "
+			if bytes.HasPrefix(line, []byte("data:")) {
+				jsonStr := bytes.TrimPrefix(line, []byte("data:"))
+
+				// 1. Partial unmarshal to check the type
+				var header struct {
+					Etype types.ReplicationEventType `json:"Etype"`
+				}
+
+				data := []byte(jsonStr)
+				if err := json.Unmarshal(data, &header); err != nil {
+					slog.Error("Invalid JSON:", "err", err)
+					continue
+				}
+
+				slog.Info("replication event recieved", "header", header.Etype, "data", jsonStr)
+
+				// 2. Route to the correct struct based on Etype
+				switch header.Etype {
+				case types.LiveMutationReplicationEType,
+					types.LiveMutationReplicationCompleteEType:
+					var event types.LiveMutationReplicationEvent
+					if err := json.Unmarshal(data, &event); err == nil {
+						streamChan <- types.ReplicationStream{
+							EType:                        event.Etype,
+							LiveMutationReplicationEvent: event,
+						}
+					} else {
+						slog.Error("error unmarshalling livemutationevent", "type", header.Etype, "err", err, "jsonStr", jsonStr)
+					}
+
+				case types.SnapshotReplicationEType,
+					types.SnapshotReplicationCompleteEType:
+					var event types.SnapshotReplicationEvent
+					if err := json.Unmarshal(data, &event); err == nil {
+						streamChan <- types.ReplicationStream{
+							EType:                    event.Etype,
+							SnapshotReplicationEvent: event,
+						}
+					} else {
+						slog.Error("error unmarshalling Snapshotevent", "type", header.Etype, "err", err, "jsonStr", jsonStr)
+					}
+				default:
+					slog.Error("unknown event type")
+				}
+			}
+		}
+	}()
+
+	return streamChan, nil
 }

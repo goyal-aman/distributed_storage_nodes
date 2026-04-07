@@ -14,7 +14,7 @@ var (
 	AVAILABLE     NodeState = "AVAILABLE"
 )
 
-type Gossip struct {
+type NodeGossip struct {
 	Id            string
 	Host          string
 	EndOfKeyRange uint64
@@ -22,12 +22,22 @@ type Gossip struct {
 	State         NodeState
 }
 
-func (g Gossip) XEndOfKeyRange() uint64 {
+func (g NodeGossip) XEndOfKeyRange() uint64 {
 	return g.EndOfKeyRange
 }
 
-func (g Gossip) XState() NodeState {
+func (g NodeGossip) XState() NodeState {
 	return g.State
+}
+
+func (g NodeGossip) Clone() NodeGossip {
+	return NodeGossip{
+		Id:            g.Id,
+		Host:          g.Host,
+		EndOfKeyRange: g.EndOfKeyRange,
+		LastUpdate:    g.LastUpdate,
+		State:         g.State,
+	}
 }
 
 // StorageNode
@@ -64,4 +74,43 @@ type StoreEntry struct {
 	// why is it uint64? not sure tbh, it feels like
 	// for now, bigger value is better.
 	Version uint64
+}
+
+// replication event
+type ReplicationEventType string
+
+var (
+	LiveMutationReplicationEType         ReplicationEventType = "LiveMutationEType"
+	LiveMutationReplicationCompleteEType ReplicationEventType = "LiveMutationCompleteEType"
+	SnapshotReplicationEType             ReplicationEventType = "SnapshotReplicationEType"
+	SnapshotReplicationCompleteEType     ReplicationEventType = "SnapshotReplicationCompleteEType"
+)
+
+var (
+	SnapshotReplicationCompleteEvent = SnapshotReplicationEvent{
+		Etype: SnapshotReplicationCompleteEType,
+	}
+
+	LiveMutationReplicationCompleteEvent = LiveMutationReplicationEvent{
+		Etype: LiveMutationReplicationCompleteEType,
+	}
+)
+
+type LiveMutationReplicationEvent struct {
+	Etype   ReplicationEventType
+	Key     string
+	Value   interface{}
+	Version uint64
+}
+
+type SnapshotReplicationEvent struct {
+	Etype  ReplicationEventType
+	Key    string
+	Values []StoreEntry
+}
+
+type ReplicationStream struct {
+	EType                        ReplicationEventType
+	SnapshotReplicationEvent     SnapshotReplicationEvent
+	LiveMutationReplicationEvent LiveMutationReplicationEvent
 }
