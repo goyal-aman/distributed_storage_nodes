@@ -38,12 +38,13 @@ This is very much a work-in-progress and learning project. I'm implementing thes
 - Node state management (JOINING → BOOTSTRAPPING → AVAILABLE)
 
 ### 🔄 Up Next (Active Development)
-- **Non-blocking Replication**: At present, point-in-time snapshot of datastore stops all writes. Goal is to learn, develop & implement point-in-time snapshot. So Far, I am aware of LSM Tree based approach. More details to be researched.
+- **Data Replication for Fault Tolerance**: Multi-replica support with configurable replication factor
 
 ### 📋 Backlog (Future Enhancements)
 - **Persistent Storage Backend**: Replace in-memory storage with disk persistence
 - **Node Failure Detection**: Enhanced gossip with heartbeat monitoring
-- **Data Replication for Fault Tolerance**: Multi-replica support with configurable replication factor
+- **Non-blocking Replication**: At present, point-in-time snapshot of datastore stops all writes. Goal is to learn, develop & implement point-in-time snapshot. So Far, I am aware of LSM Tree based approach. More details to be researched.
+
 - **Quorum & Consistency Levels**: Tunable consistency (strong/eventual) with read/write quorums
 - **Node Removal**: Graceful decommissioning of storage nodes
 - **Compaction**: Data cleanup and storage optimization

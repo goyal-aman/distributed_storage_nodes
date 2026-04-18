@@ -1,11 +1,11 @@
 info:
-  name: get nodemeta
+  name: snapshot
   type: http
-  seq: 5
+  seq: 2
 
 http:
   method: GET
-  url: http://localhost:7771/v1/node
+  url: http://localhost:7771/v1/snapshot
   auth: inherit
 
 settings:

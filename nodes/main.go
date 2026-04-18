@@ -26,8 +26,13 @@ import (
 )
 
 const (
-	Total_Slots               = uint64((1 << 64) - 1)
-	BroadCast_Ticker_Duration = 10 * time.Second
+	TOTAL_SLOTS               = uint64((1 << 64) - 1)
+	BROADCAST_TICKER_DURATION = 3 * time.Second
+
+	// WRITE_CONFIRMATION_TIMEOUT
+	// this is the max duration for which nodes are awaited for success of
+	// replicating write to peer nodes
+	WRITE_CONFIRMATION_TIMEOUT = 1 * time.Second
 )
 
 var (
@@ -235,7 +240,7 @@ func main() {
 	router := initRouter(node)
 
 	go func() {
-		ticker := time.NewTicker(BroadCast_Ticker_Duration)
+		ticker := time.NewTicker(BROADCAST_TICKER_DURATION)
 		for t := range ticker.C {
 			node.BroadcastGossip(t)
 		}
@@ -249,9 +254,12 @@ func main() {
 func initRouter(node *Node) *gin.Engine {
 	router := gin.New()
 
-	// router.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-	// 	SkipPaths: []string{"/v1/data"},
-	// }))
+	router.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+		SkipPaths: []string{"/v1/gossip"},
+	}))
+
+	// 2. Add Recovery middleware (since we didn't use gin.Default)
+	router.Use(gin.Recovery())
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -259,52 +267,42 @@ func initRouter(node *Node) *gin.Engine {
 		})
 	})
 
-	// v1
-	routerv1 := router.Group("v1")
+	// V1_NODE node meta
+	router.GET(apiclient.V1_METADATA_NODE.String(), node.getMetaDataNode)
 
-	// node
-	nodev1 := routerv1.Group("node")
-
-	// v1/node/
-	nodev1.GET("", node.nodemeta)
-
-	// v1/data/
-	datav1 := routerv1.Group("data")
-
-	// POST /v1/data make routing decisions
+	// POST V1_DATA make routing decisions
 	// sends data to owner node
 	// if owner node receives the data,
 	// it also replicates to replicas
-	datav1.POST("", node.handlePost)
-	// /v1/data/raw directly persists the data
+	router.POST(apiclient.V1_DATA.String(), node.postData)
+	router.GET(apiclient.V1_DATA.String(), node.getData)
+
+	// V1_DATA_REPLICA directly persists the data
 	// this endponit doesn't have any routing inteligence
-	datav1.POST("raw", node.handlePostRaw)
-	datav1.GET("", node.handleGet)
+	router.POST(apiclient.V1_REPLICA_DATA.String(), node.postReplicaData)
 
-	// v1/data/replicate
-	replicatev1 := datav1.Group("replicate")
-	replicatev1.GET("", node.startReplication)
+	// V1_DATA_REPLICATION
+	router.GET(apiclient.V1_SNAPSHOT_STREAM.String(), node.getSnapshotStream)
 
-	// v1/gossip
-	gossipv1 := routerv1.Group("gossip")
-	gossipv1.POST("", node.updateGossipNodes)
-	gossipv1.GET("", node.getGossipNodes)
+	// V1_GOSSIP
+	router.POST(apiclient.V1_GOSSIP.String(), node.postGossip)
+	router.GET(apiclient.V1_GOSSIP.String(), node.getGossip)
 
-	// v1/nodedetail
-	nodedetailv1 := routerv1.Group("nodedetail")
-	nodedetailv1.GET("", node.nodeForKey)
+	// V1_KEYDETAIL return who own the key
+	router.GET(apiclient.V1_METDATA_KEY.String(), node.getMetaDataKey)
 
-	// v1/snapshot
-	snapshotv1 := routerv1.Group("snapshot")
-	snapshotv1.GET("", node.getSnapShot)
+	// V1_SNAPSHOT
+	// exposed this api for debugging purposes
+	// not needed by any node/client
+	router.GET(apiclient.V1_SNAPSHOT.String(), node.getSnapShot)
 
 	return router
 
 }
 
-// nodemeta
+// getMetaDataNode
 // returns present state of node
-func (n *Node) nodemeta(c *gin.Context) {
+func (n *Node) getMetaDataNode(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"Id":            n.Id,
 		"Host":          n.Host,
@@ -372,7 +370,7 @@ func (n *Node) handleBootstrapping() {
 
 	slog.Info("requesting replica")
 
-	streamCh, err := apiclient.RequestReplica(nextNode.Host, n.Id)
+	streamCh, err := apiclient.RequestSnapshot(nextNode.Host, n.Id)
 	if err != nil {
 		slog.Error("error in requesting replica", "err", err)
 		return
@@ -383,7 +381,7 @@ func (n *Node) handleBootstrapping() {
 		case types.SnapshotReplicationEType:
 			event := ch.SnapshotReplicationEvent
 			for _, v := range event.Values {
-				storagev2.PutRaw(event.Key, v.Value, &v.Version)
+				storagev2.PutRaw(event.Key, v.Value, &v.Version, false)
 			}
 		case types.SnapshotReplicationCompleteEType:
 			slog.Info("snapshot replication completed, updating state to available")
@@ -391,7 +389,7 @@ func (n *Node) handleBootstrapping() {
 
 		case types.LiveMutationReplicationEType:
 			event := ch.LiveMutationReplicationEvent
-			storagev2.PutRaw(event.Key, event.Value, &event.Version)
+			storagev2.PutRaw(event.Key, event.Value, &event.Version, false)
 		case types.LiveMutationReplicationCompleteEType:
 			slog.Info("live mutations completed")
 		default:
@@ -456,9 +454,9 @@ func sendGossip(destHost string, bytesReader *bytes.Reader) {
 
 }
 
-// updateGossipNodes
+// postGossip
 // updates gossip using lists of gossips from clients
-func (n *Node) updateGossipNodes(c *gin.Context) {
+func (n *Node) postGossip(c *gin.Context) {
 	body := []types.NodeGossip{}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -491,9 +489,9 @@ func (n *Node) updateGossipNodes(c *gin.Context) {
 	})
 }
 
-// getGossipNodes
+// getGossip
 // return the list of gossips
-func (n *Node) getGossipNodes(c *gin.Context) {
+func (n *Node) getGossip(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": n.GossipV2.Read(),
 	})
@@ -503,26 +501,43 @@ func GetDefaultWriteQuorum() string {
 	return fmt.Sprintf("%d", wq)
 }
 
-func (n *Node) handlePostRaw(c *gin.Context) {}
-
-// handlePost
-// finds the owner node of key and store value against the key in that node.
-// value can be any type.
-func (n *Node) handlePost(c *gin.Context) {
-	body := map[string]interface{}{}
+// postReplicaData
+func (n *Node) postReplicaData(c *gin.Context) {
+	body := types.HandlePostRawReq{}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "something wrong with body",
-			"err":     err.Error(),
+		c.JSON(http.StatusBadRequest, types.PostRawDataResponse{
+			Message: "something wrong with body",
+			Err:     err.Error(),
 		})
 		return
 	}
-
-	ar := helper.MapToArr(n.GossipV2.Read())
-	sort.Slice(ar, func(a, b int) bool {
-		// increasing order in EndOfKeyRange
-		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
+	_, err := storagev2.PutRaw(body.Key, body.Value, &body.Version, true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.PostRawDataResponse{
+			Err:     err.Error(),
+			Message: "error while putting raw val in store",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, types.PostRawDataResponse{
+		IsSuccess: true,
+		Message:   "OK",
 	})
+
+}
+
+// postData
+// finds the owner node of key and store value against the key in that node.
+// value can be any type.
+func (n *Node) postData(c *gin.Context) {
+	body := map[string]interface{}{}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, types.PostDataResponse{
+			Message: "something wrong with body",
+			Err:     err.Error(),
+		})
+		return
+	}
 
 	key := body["key"].(string)
 	value := body["value"]
@@ -532,49 +547,69 @@ func (n *Node) handlePost(c *gin.Context) {
 		writequorum = GetDefaultWriteQuorum()
 		slog.With("updated_write_quorum", writequorum).Info("")
 	}
+
+	// WriteQuorum
+	// for WriteQuorum < 0, all nodes must return confirmation
+	// for WriteQuorum > 0, then provided number of nodes are awaited
+	// before write is confirmed up until timout
 	writequorumInt := 0
 	if v, err := strconv.Atoi(writequorum); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   err,
-			"message": "writequorum must be valid int",
+		c.JSON(http.StatusBadRequest, types.PostDataResponse{
+			Err:     err.Error(),
+			Message: "writequorum must be valid int",
 		})
 		return
+	} else if v < 0 {
+		writequorumInt = n.GossipV2.Size()
 	} else {
 		writequorumInt = v
 	}
 
-	token := helper.HashKey(key, Total_Slots)
+	ar := helper.MapToArr(n.GossipV2.Read())
+	sort.Slice(ar, func(a, b int) bool {
+		// increasing order in EndOfKeyRange
+		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
+	})
+
+	token := helper.HashKey(key, TOTAL_SLOTS)
 	ownerNode, err := helper.GetNode(ar, token)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Err:     err.Error(),
+			Message: "err while getting owner node",
 		})
 		return
 	}
 
-	slog.With("current_node", n.Id).
-		With("owner_node", ownerNode.Id).
-		With("key", key).
-		With("token", token).
-		With("gossips", n.GossipV2.Read()).
-		Info("owner node details")
+	// slog.With("current_node", n.Id).
+	// 	With("owner_node", ownerNode.Id).
+	// 	With("key", key).
+	// 	With("token", token).
+	// 	With("gossips", n.GossipV2.Read()).
+	// 	Info("owner node details")
 
 	// is someother node own the key
 	// get data from it
 	if ownerNode.Id != n.Id {
-		rerr := apiclient.PostKeyValue(*ownerNode, key, value, writequorum)
+		queryParams := map[string]string{
+			"writequorum": writequorum,
+			"redirected":  "true",
+		}
+		rerr := apiclient.PostKeyValue(*ownerNode, key, value, queryParams)
 		if rerr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": rerr.Error(),
+			c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+				Message: "err posting value to owner node",
+				Err:     rerr.Error(),
 			})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"message": "OK",
-			"metadata": map[string]string{
-				"redirected":  "true",
-				"serviced_by": n.Id,
-				"owned_by":    ownerNode.Id,
+		c.JSON(http.StatusOK, types.PostDataResponse{
+			IsSuccess: true,
+			Message:   "OK",
+			Metadata: &types.PostDataMetaData{
+				Redirected: true,
+				ServicedBy: n.Id,
+				OwnedBy:    ownerNode.Id,
 			},
 		})
 
@@ -587,9 +622,9 @@ func (n *Node) handlePost(c *gin.Context) {
 	// if number of nodes in the cluster are less then replicacount
 	// then fail the write
 	if n.GossipV2.Size() < GVar_ReplicaCount {
-		c.JSON(http.StatusFailedDependency, gin.H{
-			"error":   pkgerr.ErrNotEnoughNodes,
-			"message": "numer of nodes in cluster should be atleast equal to replicacount",
+		c.JSON(http.StatusFailedDependency, types.PostDataResponse{
+			Err:     pkgerr.ErrNotEnoughNodes.Error(),
+			Message: "numer of nodes in cluster should be atleast equal to replicacount",
 		})
 		return
 	}
@@ -619,7 +654,12 @@ func (n *Node) handlePost(c *gin.Context) {
 	f := func(ctx context.Context, n types.NodeGossip) (*types.NodeGossip, error) {
 		return &n, apiclient.PostRawKeyValue(ctx, n, key, value, newVersion)
 	}
-	res := helper.AtleastWorkWithTimeout(f, replicas, writequorumInt, 1*time.Second)
+	// slog.With("ownerAndReplicas", ownerAndReplicas).
+	// 	With("ar", ar).
+	// 	With("gossip", n.GossipV2.Read()).
+	// 	Info("calling post replica data")
+
+	res := helper.RunUntilMinSuccessOrTimeout(f, replicas, writequorumInt, WRITE_CONFIRMATION_TIMEOUT)
 
 	count := 0
 	for _, r := range res {
@@ -627,23 +667,26 @@ func (n *Node) handlePost(c *gin.Context) {
 			count++
 		}
 	}
-
-	// everything success
-	c.JSON(http.StatusOK, gin.H{
-		"message":       "ok",
-		"owner_node":    ownerNode.Id,
-		"replica_count": count,
+	c.JSON(http.StatusOK, types.PostDataResponse{
+		IsSuccess: true,
+		Message:   "OK",
+		Metadata: &types.PostDataMetaData{
+			Redirected: true,
+			ServicedBy: n.Id,
+			OwnedBy:    ownerNode.Id,
+		},
 	})
+
 }
 
-func (n *Node) handleGet(c *gin.Context) {
+func (n *Node) getData(c *gin.Context) {
 	key := c.Query("key")
-	slog.Info("handle get", "key", key)
+	slog.With("key", key).Info("get data")
 
 	ar := helper.MapToArr(n.GossipV2.Read())
 	helper.SortNodeInPlace(ar)
 
-	token := helper.HashKey(key, Total_Slots)
+	token := helper.HashKey(key, TOTAL_SLOTS)
 	ownerNode, err := helper.GetNode(ar, token)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -683,7 +726,7 @@ func (n *Node) handleGet(c *gin.Context) {
 }
 
 // nodedetail return details of node own the 'key'
-func (n *Node) nodeForKey(c *gin.Context) {
+func (n *Node) getMetaDataKey(c *gin.Context) {
 	key := c.Query("key")
 	hash := helper.HashKey(key, coordinator.Total_Slots)
 
@@ -707,7 +750,7 @@ func (n *Node) nodeForKey(c *gin.Context) {
 	})
 }
 
-func (n *Node) startReplication(c *gin.Context) {
+func (n *Node) getSnapshotStream(c *gin.Context) {
 	slog.Info("in start replication")
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -787,7 +830,7 @@ func (n *Node) startReplication(c *gin.Context) {
 			return
 		}
 		keyFilter := func(key string) bool {
-			token := helper.HashKey(key, Total_Slots)
+			token := helper.HashKey(key, TOTAL_SLOTS)
 			return token <= sourceNode.EndOfKeyRange
 		}
 
@@ -796,7 +839,7 @@ func (n *Node) startReplication(c *gin.Context) {
 		snapshot, cncl := storagev2.Snapshot(
 			keyFilter,
 			store.WithPostWriteHook(func(key string, val any, version uint64) {
-				token := helper.HashKey(key, Total_Slots)
+				token := helper.HashKey(key, TOTAL_SLOTS)
 				if token <= sourceNode.EndOfKeyRange {
 					body := types.LiveMutationReplicationEvent{
 						Etype:   types.LiveMutationReplicationEType,

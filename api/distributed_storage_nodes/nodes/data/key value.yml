@@ -1,14 +1,18 @@
 info:
-  name: get gossip
+  name: key value
   type: http
-  seq: 4
+  seq: 2
 
 http:
-  method: GET
-  url: http://localhost:7770/v1/gossip
+  method: POST
+  url: http://localhost:7770/v1/data
   body:
     type: json
-    data: ""
+    data: |-
+      {
+        "key":"1",
+        "value":"1"
+      }  
   auth: inherit
 
 settings:

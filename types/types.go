@@ -76,6 +76,15 @@ type StoreEntry struct {
 	// why is it uint64? not sure tbh, it feels like
 	// for now, bigger value is better.
 	Version uint64
+
+	// IsReplica
+	// if true is means the entry was replicated from owner-node
+	// to current node store
+	IsReplica bool
+}
+
+func (e StoreEntry) Clone() StoreEntry {
+	return StoreEntry{Value: e.Value, Version: e.Version, IsReplica: e.IsReplica}
 }
 
 // replication event
@@ -115,4 +124,37 @@ type ReplicationStream struct {
 	EType                        ReplicationEventType
 	SnapshotReplicationEvent     SnapshotReplicationEvent
 	LiveMutationReplicationEvent LiveMutationReplicationEvent
+}
+
+type HandlePostRawReq struct {
+	Key     string
+	Value   interface{}
+	Version uint64
+}
+
+type Endpoint string
+
+func (e Endpoint) String() string {
+	return string(e)
+}
+
+type PostDataMetaData struct {
+	Redirected   bool   `json:"redirected,omitempty"`
+	ServicedBy   string `json:"serviced_by,omitempty"`
+	OwnedBy      string `json:"owned_by,omitempty"`
+	ReplicaCount int    `json:"replica_count,omitempty"`
+}
+
+type PostDataResponse struct {
+	IsSuccess bool              `json:"status"`
+	Message   string            `json:"message,omitempty"`
+	Metadata  *PostDataMetaData `json:"metadata,omitempty"`
+	Err       string            `json:"error,omitempty"`
+}
+
+type PostRawDataResponse struct {
+	IsSuccess bool              `json:"status"`
+	Message   string            `json:"message,omitempty"`
+	Metadata  *PostDataMetaData `json:"metadata,omitempty"`
+	Err       string            `json:"error,omitempty"`
 }

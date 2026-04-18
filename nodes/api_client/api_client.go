@@ -19,11 +19,13 @@ import (
 )
 
 const (
-	nodeMetaEndpoint           = "/v1/node"
-	postRawKeyValueEndpoint    = "/v1/data"
-	postAndGetKeyValueEndpoint = "/v1/data"
-	getReplicateWrite          = "/v1/data/replicate"
-	getSnapShot                = "/v1/snapshot"
+	V1_METADATA_NODE   types.Endpoint = "/v1/metadata/node"
+	V1_METDATA_KEY     types.Endpoint = "/v1/metadata/key"
+	V1_DATA            types.Endpoint = "/v1/data"
+	V1_REPLICA_DATA    types.Endpoint = "/v1/replica/data"
+	V1_GOSSIP          types.Endpoint = "v1/gossip"
+	V1_SNAPSHOT        types.Endpoint = "/v1/snapshot"
+	V1_SNAPSHOT_STREAM types.Endpoint = "/v1/snapshot/stream"
 )
 
 func MapToQueryParamStr(m map[string]string) string {
@@ -42,22 +44,23 @@ func MapToQueryParamStr(m map[string]string) string {
 		if count < len-1 {
 			sb.WriteString("&")
 		}
+		count++
 	}
 	return sb.String()
 
 }
 
 func PostRawKeyValue(ctx context.Context, node types.NodeGossip, key string, value any, version uint64) error {
-	payload := map[string]interface{}{
-		"key":     key,
-		"value":   value,
-		"version": version,
+	payload := types.HandlePostRawReq{
+		Key:     key,
+		Value:   value,
+		Version: version,
 	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		node.Host+postRawKeyValueEndpoint,
+		node.Host+V1_REPLICA_DATA.String(),
 		helper.ToBytesReader(payload),
 	)
 	if err != nil {
@@ -70,7 +73,7 @@ func PostRawKeyValue(ctx context.Context, node types.NodeGossip, key string, val
 
 	_, perr := client.Do(req)
 	if perr != nil {
-		slog.Error("err redirect post key value", "dest_host", node.Host, "err", perr)
+		slog.Error("err redirect raw post key value", "dest_host", node.Host, "err", perr)
 		// return fmt.Errorf("err occured while send init node", err)
 		return errors.Join(pkgerr.ErrRedirectPostKeyValue, perr)
 	}
@@ -78,31 +81,33 @@ func PostRawKeyValue(ctx context.Context, node types.NodeGossip, key string, val
 	return nil
 }
 
-func PostKeyValue(node types.NodeGossip, key string, value any, writequorum string) error {
+func PostKeyValue(node types.NodeGossip, key string, value any, queryParams map[string]string) error {
 	payload := map[string]interface{}{
 		"key":   key,
 		"value": value,
 	}
 
-	queryParams := map[string]string{
-		"writequorum": writequorum,
-	}
-	resp, perr := http.Post(node.Host+postAndGetKeyValueEndpoint+MapToQueryParamStr(queryParams), "application/json", helper.ToBytesReader(payload))
+	resp, perr := http.Post(node.Host+V1_DATA.String()+MapToQueryParamStr(queryParams), "application/json", helper.ToBytesReader(payload))
 	if perr != nil {
 		slog.Error("err redirect post key value", "dest_host", node.Host, "err", perr)
-		// return fmt.Errorf("err occured while send init node", err)
 		return errors.Join(pkgerr.ErrRedirectPostKeyValue, perr)
 	}
 
-	respBytes := make([]byte, 0)
-	resp.Body.Read(respBytes)
-	slog.Debug("send node success")
-	return nil
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	body := types.PostDataResponse{}
+	json.Unmarshal(respBytes, &body)
+	if body.IsSuccess {
+		return nil
+	}
+	return errors.New(body.Err)
 }
 
 func GetKeyValue(node types.NodeGossip, key string) (map[string]interface{}, error) {
 
-	resp, perr := http.Get(node.Host + postAndGetKeyValueEndpoint + fmt.Sprintf("?key=%s", key))
+	resp, perr := http.Get(node.Host + V1_DATA.String() + fmt.Sprintf("?key=%s", key))
 	if perr != nil {
 		slog.Error("err redirect get key value", "dest_host", node.Host, "err", perr)
 		return nil, errors.Join(err.ErrRedirectGetKeyValue, perr)
@@ -119,7 +124,7 @@ func GetKeyValue(node types.NodeGossip, key string) (map[string]interface{}, err
 }
 
 func GetNodeMeta(host string) (map[string]interface{}, error) {
-	resp, err := http.Get(host + nodeMetaEndpoint)
+	resp, err := http.Get(host + V1_METADATA_NODE.String())
 	if err != nil {
 		return nil, fmt.Errorf("%w error in geting nodemeta", err)
 	}
@@ -136,36 +141,36 @@ func GetNodeMeta(host string) (map[string]interface{}, error) {
 
 }
 
-func RequestSnapshot(host string) (map[string]interface{}, error) {
-	resp, err := http.Get(host + getSnapShot)
-	if err != nil {
-		return nil, fmt.Errorf("%w error in geting snapshot", err)
-	}
-	defer resp.Body.Close()
+// func RequestSnapshot(host string) (map[string]interface{}, error) {
+// 	resp, err := http.Get(host + getSnapShot)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("%w error in geting snapshot", err)
+// 	}
+// 	defer resp.Body.Close()
 
-	reader := bufio.NewScanner(resp.Body)
-	for reader.Scan() {
-		line := reader.Text()
+// 	reader := bufio.NewScanner(resp.Body)
+// 	for reader.Scan() {
+// 		line := reader.Text()
 
-		// ignore empty lines
-		if line == "" {
-			continue
-		}
+// 		// ignore empty lines
+// 		if line == "" {
+// 			continue
+// 		}
 
-		// Only process data lines
-		if strings.HasPrefix(line, "data: ") {
-			jsonStr := strings.TrimPrefix(line, "data: ")
+// 		// Only process data lines
+// 		if strings.HasPrefix(line, "data: ") {
+// 			jsonStr := strings.TrimPrefix(line, "data: ")
 
-			fmt.Printf("Received → key=%s, value=%v\n", "Key", jsonStr)
-		}
-	}
-	return nil, nil
+// 			fmt.Printf("Received → key=%s, value=%v\n", "Key", jsonStr)
+// 		}
+// 	}
+// 	return nil, nil
 
-}
+// }
 
-func RequestReplica(host, sourceid string) (chan types.ReplicationStream, error) {
+func RequestSnapshot(host, sourceid string) (chan types.ReplicationStream, error) {
 
-	resp, gerr := http.Get(host + getReplicateWrite + "?sourceid=" + sourceid)
+	resp, gerr := http.Get(host + V1_SNAPSHOT_STREAM.String() + "?sourceid=" + sourceid)
 	if gerr != nil {
 		slog.Error("err in request replicate", "host", host, "sourceid", sourceid)
 		return nil, errors.Join(err.ErrRequestingReplica, gerr)

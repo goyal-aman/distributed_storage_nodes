@@ -70,11 +70,16 @@ func (d *DataStore) Get(key string) (any, error) {
 // then find the most recent version and add new entry with most_recent_version+1
 // (key, val, most_recent_version+1)
 func (d *DataStore) Put(key string, val any) (uint64, error) {
-	return d.PutRaw(key, val, nil)
+	return d.PutRaw(key, val, nil, false)
 }
 
 // returns new version and error
-func (d *DataStore) PutRaw(key string, val any, version *uint64) (uint64, error) {
+func (d *DataStore) PutRaw(
+	key string,
+	val any,
+	version *uint64,
+	isRepica bool,
+) (uint64, error) {
 	d.mu.Lock()
 
 	entries, exist := d.store[key]
@@ -82,7 +87,7 @@ func (d *DataStore) PutRaw(key string, val any, version *uint64) (uint64, error)
 	if !exist {
 		newVersion = 1
 		d.store[key] = []types.StoreEntry{
-			{Value: val, Version: newVersion},
+			{Value: val, Version: newVersion, IsReplica: isRepica},
 		}
 	} else {
 		mostRecentEntry := entries[len(entries)-1]
@@ -91,8 +96,9 @@ func (d *DataStore) PutRaw(key string, val any, version *uint64) (uint64, error)
 			newVersion = *version
 		}
 		entries = append(entries, types.StoreEntry{
-			Value:   val,
-			Version: newVersion,
+			Value:     val,
+			Version:   newVersion,
+			IsReplica: isRepica,
 		})
 		d.store[key] = entries
 	}
@@ -152,7 +158,7 @@ func (d *DataStore) Snapshot(
 		}
 		newSlice := make([]types.StoreEntry, len(v))
 		for idx, item := range v {
-			newSlice[idx] = types.StoreEntry{Value: item.Value, Version: item.Version}
+			newSlice[idx] = item.Clone()
 		}
 		deepCopy[k] = newSlice
 	}

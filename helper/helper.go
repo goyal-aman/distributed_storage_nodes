@@ -66,7 +66,7 @@ func GetNNode[T interface {
 		return nil, err.ErrNoNodeWithRequiredEndOfKeyRange
 	}
 
-	nodes := make([]T, N)
+	nodes := make([]T, 0, N)
 	for len(nodes) < N {
 		currIdx := (startNodeIdx + len(nodes)) % len(node)
 		nodes = append(nodes, node[currIdx])
@@ -165,9 +165,16 @@ type container[R any] struct {
 	E error
 }
 
-// AtleastWorkWithTimeout
-// return true, when minSuccess number of jobs complete or when timeout occurs
-func AtleastWorkWithTimeout[I, R any](worker func(context.Context, I) (R, error), work []I, minSuccess int, timeout time.Duration) []container[R] {
+// RunUntilMinSuccessOrTimeout
+// Starts worker with provided inputs
+// as soon as minSuccess number of workers are completed it cancels remaining workers
+// it waits for atmost 'timeout' duration before cancelling all workers.
+func RunUntilMinSuccessOrTimeout[I, R any](
+	fn func(context.Context, I) (R, error),
+	work []I,
+	minSuccess int,
+	timeout time.Duration,
+) []container[R] {
 	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -186,7 +193,7 @@ func AtleastWorkWithTimeout[I, R any](worker func(context.Context, I) (R, error)
 		go func(ctx context.Context) {
 			defer wg.Done()
 
-			r, err := worker(ctx, w)
+			r, err := fn(ctx, w)
 			res := container[R]{r, err}
 
 			if err == nil {
