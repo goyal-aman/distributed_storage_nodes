@@ -65,16 +65,16 @@ func (d *DataStore) Get(key string) (any, error) {
 	return nil, nil
 }
 
-
 // Put
 // store val against the key. if key already exist in the store
 // then find the most recent version and add new entry with most_recent_version+1
 // (key, val, most_recent_version+1)
-func (d *DataStore) Put(key string, val any) error {
+func (d *DataStore) Put(key string, val any) (uint64, error) {
 	return d.PutRaw(key, val, nil)
 }
 
-func (d *DataStore) PutRaw(key string, val any, version *uint64) error {
+// returns new version and error
+func (d *DataStore) PutRaw(key string, val any, version *uint64) (uint64, error) {
 	d.mu.Lock()
 
 	entries, exist := d.store[key]
@@ -113,7 +113,7 @@ func (d *DataStore) PutRaw(key string, val any, version *uint64) error {
 	if hook != nil {
 		d.postWriteHook(key, val, newVersion)
 	}
-	return nil
+	return newVersion, nil
 }
 
 // Snapshot return point-in-time view of store

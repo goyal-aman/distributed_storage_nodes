@@ -5,10 +5,10 @@ info:
 
 http:
   method: GET
-  url: http://localhost:7777/v1?key=name
+  url: http://localhost:7770/v1/data?key=14
   params:
     - name: key
-      value: name
+      value: "14"
       type: query
   auth: inherit
 

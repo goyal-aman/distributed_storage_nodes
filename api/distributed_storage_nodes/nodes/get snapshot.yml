@@ -5,11 +5,7 @@ info:
 
 http:
   method: GET
-  url: http://localhost:7770/v1/data?key=1
-  params:
-    - name: key
-      value: "1"
-      type: query
+  url: http://localhost:7770/v1/snapshot
   auth: inherit
 
 settings:

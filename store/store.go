@@ -5,9 +5,9 @@ type Store interface {
 	Get(key string) (any, error)
 
 	// Put store value againt key
-	Put(key string, value interface{}) error
+	Put(key string, value interface{}) (uint64, error)
 
-	PutRaw(key string, val any, version *uint64) error
+	PutRaw(key string, val any, version *uint64) (uint64, error)
 
 	Snapshot(filter KeyFilter, opts ...Opts) (Snapshot, PostWriteHookCncl)
 

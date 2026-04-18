@@ -20,6 +20,7 @@ type NodeGossip struct {
 	EndOfKeyRange uint64
 	LastUpdate    time.Time
 	State         NodeState
+	ReplicaCount  int
 }
 
 func (g NodeGossip) XEndOfKeyRange() uint64 {
@@ -37,6 +38,7 @@ func (g NodeGossip) Clone() NodeGossip {
 		EndOfKeyRange: g.EndOfKeyRange,
 		LastUpdate:    g.LastUpdate,
 		State:         g.State,
+		ReplicaCount:  g.ReplicaCount,
 	}
 }
 

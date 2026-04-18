@@ -8,4 +8,5 @@ var (
 	ErrReplicatePostKeyValue           = errors.New("err in replicating post key value")
 	ErrRequestingReplica               = errors.New("err in requesting replica")
 	ErrRedirectGetKeyValue             = errors.New("err in redirecting get key value")
+	ErrNotEnoughNodes                  = errors.New("err not enough nodes")
 )

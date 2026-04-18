@@ -5,10 +5,10 @@ info:
 
 http:
   method: GET
-  url: http://localhost:8880/v1/nodedetail?key=9
+  url: http://localhost:7770/v1/nodedetail?key=1
   params:
     - name: key
-      value: "9"
+      value: "1"
       type: query
   body:
     type: json

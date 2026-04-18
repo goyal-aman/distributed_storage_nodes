@@ -11,7 +11,7 @@ http:
     data: |-
       {
         "key":"1",
-        "value":"4"
+        "value":"1"
       }  
   auth: inherit
 

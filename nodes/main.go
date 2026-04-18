@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -9,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
+	pkgerr "github.com/goyal-aman/distributed-storage-nodes/err"
 	"github.com/goyal-aman/distributed-storage-nodes/gossip"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	apiclient "github.com/goyal-aman/distributed-storage-nodes/nodes/api_client"
@@ -36,6 +39,11 @@ var (
 	fHost          = flag.String("host", "", "host addr of current node. this is mandatory. example 'http://0.0.0.0:7770'")
 	fEndOfKeyRange = flag.String("eokr", "", "EndOfKeyRange for the node. this is mandatory. '18446744073709551615' is max value")
 	fSeedNodes     = flag.String("seed", "", "comma separated host details of seed node, default is ''; example 'http://0.0.0.0:8080,http://0.0.0.0:8081'")
+
+	fReplicaCount = flag.String(
+		"replicacount", "",
+		"additional nodes in cluster which contains the copy of data. If replicacount is 2, that means there are total three copies - 1 ownernode and 2 replicanodes"+
+			"replicaCount can be supplied to seed nodes. That is, if a node is started with seed arg then replicacount cannot be provided")
 )
 
 var (
@@ -44,6 +52,7 @@ var (
 	// GVar_Host is host address of current node where other nodes will contact on
 	GVar_Host          string
 	GVar_SeedNodes     []string
+	GVar_ReplicaCount  int
 	GVar_EndOfKeyRange uint64
 )
 
@@ -71,6 +80,29 @@ func init() {
 	if fSeedNodes != nil && len(*fSeedNodes) > 0 {
 		GVar_SeedNodes = strings.Split(*fSeedNodes, ",")
 		slog.Info("Seed Nodes", "seed_nodes", GVar_SeedNodes)
+	}
+
+	if len(GVar_SeedNodes) > 0 && len(strings.Trim(*fReplicaCount, " ")) > 0 {
+		// if this is not seed node then replica count cannot be provided
+		slog.Error("replicacount can only be supplied to seednode")
+		os.Exit(1)
+	} else if len(GVar_SeedNodes) == 0 && len(strings.Trim(*fReplicaCount, " ")) == 0 {
+		// if this is seed node that replica count is must
+		slog.Error("for seed node 'replicacount' must be provided")
+		os.Exit(1)
+	} else if len(GVar_SeedNodes) == 0 {
+		slog.With("received replicacount", *fReplicaCount).
+			Info("initializing replicaclount")
+		iVal, err := strconv.Atoi(*fReplicaCount)
+		if err != nil {
+			slog.With("err", err).Error("invalid replicacount")
+			os.Exit(1)
+		}
+		slog.With("received replicacount", *fReplicaCount).
+			With("parsed replicacount", iVal).
+			Info("initialised replicaclount")
+		GVar_ReplicaCount = iVal
+
 	}
 
 	// handle EndOfKeyRange
@@ -101,6 +133,8 @@ type Node struct {
 	LastUpdate time.Time
 	State      types.NodeState
 
+	ReplicaCount int
+
 	// isReadyForBootstrapping
 	gossipMeta []int
 }
@@ -119,7 +153,7 @@ func NewNode() *Node {
 	if len(GVar_SeedNodes) > 0 {
 		for _, sNode := range GVar_SeedNodes {
 			nodeMeta, err := apiclient.GetNodeMeta(sNode)
-			slog.Info("seed node data", "node_meta", nodeMeta)
+			// slog.Info("seed node data", "node_meta", nodeMeta)
 			if err != nil {
 				slog.Error("failed to get seed nodemeta", "err", err, "host", sNode)
 				continue
@@ -136,6 +170,8 @@ func NewNode() *Node {
 
 			id := nodeMeta["Id"].(string)
 			host := nodeMeta["Host"].(string)
+
+			replicaCount := int(nodeMeta["ReplicaCount"].(float64))
 			state := types.NodeState(nodeMeta["State"].(string))
 			a := types.NodeGossip{
 				Id:            id,
@@ -143,8 +179,21 @@ func NewNode() *Node {
 				EndOfKeyRange: endOfKeyRange,
 				LastUpdate:    t,
 				State:         state,
+				ReplicaCount:  replicaCount,
 			}
 			gossipNodesV2.Upsert(id, a)
+
+			// update GVar_ReplicaCount
+			slog.With("seed_replica_count", replicaCount).
+				With("current_replica_count", GVar_ReplicaCount).
+				With("num_seed_nodes", len(GVar_SeedNodes)).
+				Info("initing GVar_ReplicaCount")
+			if GVar_ReplicaCount == 0 {
+				GVar_ReplicaCount = replicaCount
+			} else if GVar_ReplicaCount > 0 && GVar_ReplicaCount != replicaCount {
+				slog.Error("Conflicting replicacount")
+				os.Exit(1)
+			}
 			// gossipNodes[id] = a
 		}
 		slog.Info("seed node found", "seed_node", gossipNodesV2)
@@ -157,6 +206,7 @@ func NewNode() *Node {
 		nodeState = types.AVAILABLE
 	}
 
+	slog.With("GVar_replicacount", GVar_ReplicaCount).Info("creating node")
 	node := &Node{
 		Id:            uuid.New().String(),
 		Host:          GVar_Host,
@@ -164,6 +214,7 @@ func NewNode() *Node {
 		EndOfKeyRange: GVar_EndOfKeyRange,
 		LastUpdate:    time.Now(),
 		State:         nodeState,
+		ReplicaCount:  GVar_ReplicaCount,
 	}
 
 	node.GossipV2.Upsert(node.Id, types.NodeGossip{
@@ -172,6 +223,7 @@ func NewNode() *Node {
 		EndOfKeyRange: node.EndOfKeyRange,
 		LastUpdate:    time.Now(),
 		State:         node.State,
+		ReplicaCount:  node.ReplicaCount,
 	})
 
 	slog.Info("node created", "node", node)
@@ -218,7 +270,15 @@ func initRouter(node *Node) *gin.Engine {
 
 	// v1/data/
 	datav1 := routerv1.Group("data")
+
+	// POST /v1/data make routing decisions
+	// sends data to owner node
+	// if owner node receives the data,
+	// it also replicates to replicas
 	datav1.POST("", node.handlePost)
+	// /v1/data/raw directly persists the data
+	// this endponit doesn't have any routing inteligence
+	datav1.POST("raw", node.handlePostRaw)
 	datav1.GET("", node.handleGet)
 
 	// v1/data/replicate
@@ -252,6 +312,7 @@ func (n *Node) nodemeta(c *gin.Context) {
 		"EndOfKeyRange": n.EndOfKeyRange,
 		"LastUpdate":    n.LastUpdate,
 		"State":         n.State,
+		"ReplicaCount":  n.ReplicaCount,
 	})
 }
 
@@ -358,6 +419,7 @@ func (n *Node) BroadcastGossip(_ time.Time) {
 		EndOfKeyRange: n.EndOfKeyRange,
 		LastUpdate:    time.Now(),
 		State:         n.State,
+		ReplicaCount:  n.ReplicaCount,
 	}
 	n.GossipV2.Upsert(n.Id, currNode)
 
@@ -436,6 +498,12 @@ func (n *Node) getGossipNodes(c *gin.Context) {
 		"message": n.GossipV2.Read(),
 	})
 }
+func GetDefaultWriteQuorum() string {
+	wq := GVar_ReplicaCount / 2
+	return fmt.Sprintf("%d", wq)
+}
+
+func (n *Node) handlePostRaw(c *gin.Context) {}
 
 // handlePost
 // finds the owner node of key and store value against the key in that node.
@@ -458,6 +526,22 @@ func (n *Node) handlePost(c *gin.Context) {
 
 	key := body["key"].(string)
 	value := body["value"]
+	writequorum := c.Query("writequorum")
+	slog.With("supplied_write_quorum", writequorum).Info("")
+	if strings.TrimSpace(writequorum) == "" {
+		writequorum = GetDefaultWriteQuorum()
+		slog.With("updated_write_quorum", writequorum).Info("")
+	}
+	writequorumInt := 0
+	if v, err := strconv.Atoi(writequorum); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   err,
+			"message": "writequorum must be valid int",
+		})
+		return
+	} else {
+		writequorumInt = v
+	}
 
 	token := helper.HashKey(key, Total_Slots)
 	ownerNode, err := helper.GetNode(ar, token)
@@ -468,14 +552,22 @@ func (n *Node) handlePost(c *gin.Context) {
 		return
 	}
 
+	slog.With("current_node", n.Id).
+		With("owner_node", ownerNode.Id).
+		With("key", key).
+		With("token", token).
+		With("gossips", n.GossipV2.Read()).
+		Info("owner node details")
+
 	// is someother node own the key
 	// get data from it
 	if ownerNode.Id != n.Id {
-		rerr := apiclient.PostKeyValue(*ownerNode, key, value)
+		rerr := apiclient.PostKeyValue(*ownerNode, key, value, writequorum)
 		if rerr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": rerr.Error(),
 			})
+			return
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"message": "OK",
@@ -489,32 +581,58 @@ func (n *Node) handlePost(c *gin.Context) {
 		return
 	}
 
+	// send request to next replicacount number of nodes
+	// wait for only writequorum number of nodes
+	// writequorum of <=1 is considered as 1
+	// if number of nodes in the cluster are less then replicacount
+	// then fail the write
+	if n.GossipV2.Size() < GVar_ReplicaCount {
+		c.JSON(http.StatusFailedDependency, gin.H{
+			"error":   pkgerr.ErrNotEnoughNodes,
+			"message": "numer of nodes in cluster should be atleast equal to replicacount",
+		})
+		return
+	}
+
 	// current node own the key range
 	// store in the databaase, additionally, if there is node
 	// with EndOfKeyRange just less than curr node.EndOfKeyRange
 	// and State == BootStrapping then this write needs to be replicated there.
 	// Later on I'll check whether this can be achieved by raft algo
-	if err := storagev2.Put(key, value); err != nil {
+	newVersion, err := storagev2.Put(key, value)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	// if followerNode := helper.GetNodeForReplication(ar, n.EndOfKeyRange); followerNode != nil {
-	// 	err = apiclient.ReplicateWrite(followerNode.Host, key, value)
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{
-	// 			"error": fmt.Errorf("%w, error replicating write to bootstraping node", err),
-	// 		})
-	// 		return
-	// 	}
-	// }
+	// get next replicacount number of nodes
+	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount)
+	if err != nil {
+		slog.With("err", err).Error("err in replicating write")
+		return
+	}
+
+	// owner := ownerAndReplicas[0]
+	replicas := ownerAndReplicas[1:]
+	f := func(ctx context.Context, n types.NodeGossip) (*types.NodeGossip, error) {
+		return &n, apiclient.PostRawKeyValue(ctx, n, key, value, newVersion)
+	}
+	res := helper.AtleastWorkWithTimeout(f, replicas, writequorumInt, 1*time.Second)
+
+	count := 0
+	for _, r := range res {
+		if r.E == nil {
+			count++
+		}
+	}
 
 	// everything success
 	c.JSON(http.StatusOK, gin.H{
-		"message":    "ok",
-		"owner_node": ownerNode.Id,
+		"message":       "ok",
+		"owner_node":    ownerNode.Id,
+		"replica_count": count,
 	})
 }
 
