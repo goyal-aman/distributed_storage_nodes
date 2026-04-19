@@ -533,9 +533,21 @@ func (n *Node) postReplicaData(c *gin.Context) {
 
 // postData
 // finds the owner node of key and store value against the key in that node.
-// value can be any type.
+// value can be any type. Number of available nodes in the cluster must be
+// atleast REPLICA_COUNT for writes to be accepted. Writes are atempted to
+// be replicated to all replica nodes. However, confirmation is awated for
+// only WRITE_QUORUM number of nodes. Confirmation from replica nodes are
+// awaited for duration WRITE_CONFIRMATION_TIMEOUT. Data is always written
+// to owner node first, then replicated to replica nodes. Replica nodes store
+// the key, value & version pair as is with no modifications.
 //
-// Query Params:
+// # Known Issues
+// if at this time, the write to replica node fails for any reason, there
+// exist no mechanism to replica to get the value. That is sync is not present.
+// I have few thoughts in mind how this can be achieved, but that is for later
+// time.
+//
+// # Query Params
 // writequorum: valid values in [-inf to ReplicaCount]. writequorum is number
 // replicas which must confirm write for write to be confirmed success within
 // WRITE_CONFIRMATION_TIMEOUT duration. Negative values means all replicas
@@ -638,14 +650,13 @@ func (n *Node) postData(c *gin.Context) {
 	}
 
 	// send request to next replicacount number of nodes
-	// wait for only writequorum number of nodes
-	// writequorum of <=1 is considered as 1
-	// if number of nodes in the cluster are less then replicacount
-	// then fail the write
-	if n.GossipV2.Size() < GVar_ReplicaCount {
+	// wait for only REPLICA_COUNT number of nodes
+	// if number of available nodes in the cluster
+	// are less then REPLICA_COUNT then fail the write
+	if n.GossipV2.NumNodeInState(types.AVAILABLE) < GVar_ReplicaCount {
 		c.JSON(http.StatusFailedDependency, types.PostDataResponse{
 			Err:     pkgerr.ErrNotEnoughNodes.Error(),
-			Message: "numer of nodes in cluster should be atleast equal to replicacount",
+			Message: "available nodes in cluster should be atleast equal to replicacount",
 		})
 		return
 	}

@@ -160,3 +160,11 @@ type PostRawDataResponse struct {
 	Metadata  *PostDataMetaData `json:"metadata,omitempty"`
 	Err       string            `json:"error,omitempty"`
 }
+
+type HasEndOfKeyRange interface {
+	XEndOfKeyRange() uint64
+}
+
+type HasState interface {
+	XState() NodeState
+}

@@ -31,17 +31,9 @@ func HashKey(key string, mod uint64) uint64 {
 	return binary.BigEndian.Uint64(sum[:8]) % mod
 }
 
-type HasEndOfKeyRange interface {
-	XEndOfKeyRange() uint64
-}
-
-type HasState interface {
-	XState() types.NodeState
-}
-
 func GetNNode[T interface {
-	HasEndOfKeyRange
-	HasState
+	types.HasEndOfKeyRange
+	types.HasState
 }](
 	node []T,
 	token uint64,
@@ -82,8 +74,8 @@ func GetNNode[T interface {
 // returns only nodes with XState() == types.AVAILABLE
 // nodes must be in increases order of EndOfKeyRange
 func GetNode[T interface {
-	HasEndOfKeyRange
-	HasState
+	types.HasEndOfKeyRange
+	types.HasState
 }](
 	nodes []T,
 	token uint64) (*T, error) {
@@ -125,8 +117,8 @@ func MaxTime(t1, t2 time.Time) time.Time {
 // returns the next available node which handles the token (token = hash(key))
 // nodes must be in increases order of EndOfKeyRange
 func GetNodeByToken[T interface {
-	HasEndOfKeyRange
-	HasState
+	types.HasEndOfKeyRange
+	types.HasState
 }](nodes []T, token uint64) (*T, error) {
 	for _, node := range nodes {
 		if node.XState() == types.AVAILABLE &&
@@ -141,8 +133,8 @@ func GetNodeByToken[T interface {
 // for a given owner node it returns a another
 // node n which should follow writes of owner node
 func GetNodeForReplication[T interface {
-	HasEndOfKeyRange
-	HasState
+	types.HasEndOfKeyRange
+	types.HasState
 }](nodes []T, eokr uint64) *T {
 	for _, n := range slices.Backward(nodes) {
 		if n.XEndOfKeyRange() < eokr &&
@@ -153,7 +145,7 @@ func GetNodeForReplication[T interface {
 	return nil
 }
 
-func SortNodeInPlace[T interface{ HasEndOfKeyRange }](ar []T) {
+func SortNodeInPlace[T interface{ types.HasEndOfKeyRange }](ar []T) {
 	sort.Slice(ar, func(a, b int) bool {
 		// increasing order in EndOfKeyRange
 		return ar[a].XEndOfKeyRange() < ar[b].XEndOfKeyRange()

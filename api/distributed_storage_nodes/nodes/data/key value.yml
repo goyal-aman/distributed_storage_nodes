@@ -5,14 +5,21 @@ info:
 
 http:
   method: POST
-  url: http://localhost:7770/v1/data
+  url: http://localhost:7770/v1/data?writequorum=1&include=res
+  params:
+    - name: writequorum
+      value: "1"
+      type: query
+    - name: include
+      value: res
+      type: query
   body:
     type: json
     data: |-
       {
-        "key":"1",
-        "value":"1"
-      }  
+        "key":"2",
+        "value":"2"
+      } 
   auth: inherit
 
 settings:
