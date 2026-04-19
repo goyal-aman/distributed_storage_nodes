@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -496,6 +497,10 @@ func (n *Node) getGossip(c *gin.Context) {
 		"message": n.GossipV2.Read(),
 	})
 }
+
+// GetDefaultWriteQuorum return the count of replicas
+// that should have the key given ecluding owner node.
+// Total number of nodes which have keys is replicas + owner-node
 func GetDefaultWriteQuorum() string {
 	wq := GVar_ReplicaCount / 2
 	return fmt.Sprintf("%d", wq)
@@ -529,6 +534,19 @@ func (n *Node) postReplicaData(c *gin.Context) {
 // postData
 // finds the owner node of key and store value against the key in that node.
 // value can be any type.
+//
+// Query Params:
+// writequorum: valid values in [-inf to ReplicaCount]. writequorum is number
+// replicas which must confirm write for write to be confirmed success within
+// WRITE_CONFIRMATION_TIMEOUT duration. Negative values means all replicas
+// must confirm write. Owner node is always required to confirm the write.
+// if for any reason owner node fails the write the request is failed and
+// not replicated to replicas
+//
+// include: comma separated list of strings. This is used to return additional
+// metadata in the response. Mainly added this for debugging purpose. Presently
+// support values are "res". This return the result from replica nodes in the
+// response metadata
 func (n *Node) postData(c *gin.Context) {
 	body := map[string]interface{}{}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -564,6 +582,9 @@ func (n *Node) postData(c *gin.Context) {
 	} else {
 		writequorumInt = v
 	}
+
+	includeQueryParameter := c.Query("include")
+	includeSlice := strings.Split(includeQueryParameter, ",")
 
 	ar := helper.MapToArr(n.GossipV2.Read())
 	sort.Slice(ar, func(a, b int) bool {
@@ -636,8 +657,9 @@ func (n *Node) postData(c *gin.Context) {
 	// Later on I'll check whether this can be achieved by raft algo
 	newVersion, err := storagev2.Put(key, value)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Message: "error in writing value to owner node, write not replicated to replicas",
+			Err:     err.Error(),
 		})
 		return
 	}
@@ -667,13 +689,21 @@ func (n *Node) postData(c *gin.Context) {
 			count++
 		}
 	}
+
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "res") {
+		mislaneous["res"] = res
+	}
+
 	c.JSON(http.StatusOK, types.PostDataResponse{
 		IsSuccess: true,
 		Message:   "OK",
 		Metadata: &types.PostDataMetaData{
-			Redirected: true,
-			ServicedBy: n.Id,
-			OwnedBy:    ownerNode.Id,
+			Redirected:   true,
+			ServicedBy:   n.Id,
+			OwnedBy:      ownerNode.Id,
+			ReplicaCount: count,
+			Mislaneous:   mislaneous,
 		},
 	})
 

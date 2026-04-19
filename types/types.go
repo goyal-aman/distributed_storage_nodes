@@ -139,10 +139,12 @@ func (e Endpoint) String() string {
 }
 
 type PostDataMetaData struct {
-	Redirected   bool   `json:"redirected,omitempty"`
-	ServicedBy   string `json:"serviced_by,omitempty"`
-	OwnedBy      string `json:"owned_by,omitempty"`
-	ReplicaCount int    `json:"replica_count,omitempty"`
+	// omitempty is not present intentionally
+	Redirected   bool        `json:"redirected"`
+	ServicedBy   string      `json:"serviced_by"`
+	OwnedBy      string      `json:"owned_by"`
+	ReplicaCount int         `json:"replica_count"`
+	Mislaneous   interface{} `json:"mislaneous,omitempty"`
 }
 
 type PostDataResponse struct {

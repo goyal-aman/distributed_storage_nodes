@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -165,6 +166,14 @@ type container[R any] struct {
 	E error
 }
 
+func (c container[R]) String() string {
+	errStr := ""
+	if c.E != nil {
+		errStr = c.E.Error()
+	}
+	return fmt.Sprintf("{R:%s, Err:%s}", c.R, errStr)
+}
+
 // RunUntilMinSuccessOrTimeout
 // Starts worker with provided inputs
 // as soon as minSuccess number of workers are completed it cancels remaining workers
@@ -196,17 +205,25 @@ func RunUntilMinSuccessOrTimeout[I, R any](
 			r, err := fn(ctx, w)
 			res := container[R]{r, err}
 
-			if err == nil {
-				if success.Add(1) >= int32(minSuccess) {
-					cancel()
-				}
-			}
-
 			select {
 			case rChan <- res:
+				if err == nil {
+					if success.Add(1) >= int32(minSuccess) {
+						cancel()
+					}
+				}
 			case <-ctx.Done():
 			}
 		}(ctxWithTimeout)
+	}
+
+	// special handling for when minSuccess requires is 0
+	// as soon as all the request is fired, cancel the context
+	// at this point I see no real world usecase for this.
+	// but it exist because implementation allows minSuccess
+	// with 0 is possible input.
+	if minSuccess == 0 {
+		cancel()
 	}
 
 	go func() {
