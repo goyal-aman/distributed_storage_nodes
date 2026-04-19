@@ -9,4 +9,5 @@ var (
 	ErrRequestingReplica               = errors.New("err in requesting replica")
 	ErrRedirectGetKeyValue             = errors.New("err in redirecting get key value")
 	ErrNotEnoughNodes                  = errors.New("err not enough nodes")
+	ErrInvalidReadQuorumValue          = errors.New("err invalid value of readquorum")
 )

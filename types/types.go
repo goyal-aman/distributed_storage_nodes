@@ -138,7 +138,7 @@ func (e Endpoint) String() string {
 	return string(e)
 }
 
-type PostDataMetaData struct {
+type PostAndGetDataMetaData struct {
 	// omitempty is not present intentionally
 	Redirected   bool        `json:"redirected"`
 	ServicedBy   string      `json:"serviced_by"`
@@ -148,17 +148,17 @@ type PostDataMetaData struct {
 }
 
 type PostDataResponse struct {
-	IsSuccess bool              `json:"status"`
-	Message   string            `json:"message,omitempty"`
-	Metadata  *PostDataMetaData `json:"metadata,omitempty"`
-	Err       string            `json:"error,omitempty"`
+	IsSuccess bool                    `json:"status"`
+	Message   string                  `json:"message,omitempty"`
+	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
+	Err       string                  `json:"error,omitempty"`
 }
 
 type PostRawDataResponse struct {
-	IsSuccess bool              `json:"status"`
-	Message   string            `json:"message,omitempty"`
-	Metadata  *PostDataMetaData `json:"metadata,omitempty"`
-	Err       string            `json:"error,omitempty"`
+	IsSuccess bool                    `json:"status"`
+	Message   string                  `json:"message,omitempty"`
+	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
+	Err       string                  `json:"error,omitempty"`
 }
 
 type HasEndOfKeyRange interface {
@@ -167,4 +167,13 @@ type HasEndOfKeyRange interface {
 
 type HasState interface {
 	XState() NodeState
+}
+
+type GetDataResponse struct {
+	IsSuccess bool                    `json:"status"`
+	Value     interface{}             `json:"value"`
+	Version   uint64                  `json:"version"`
+	Message   string                  `json:"message,omitempty"`
+	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
+	Err       string                  `json:"error,omitempty"`
 }

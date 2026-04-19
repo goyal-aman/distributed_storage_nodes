@@ -4,6 +4,8 @@ type Store interface {
 	// Get get by key
 	Get(key string) (any, error)
 
+	GetValAndVersion(key string) (any, uint64, error)
+
 	// Put store value againt key
 	Put(key string, value interface{}) (uint64, error)
 

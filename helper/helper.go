@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"slices"
 	"sort"
 	"strconv"
@@ -230,4 +231,16 @@ func RunUntilMinSuccessOrTimeout[I, R any](
 
 	return output
 
+}
+
+func PickNRandom[T any](arr []T, n int) []T {
+	randPerm := rand.Perm(len(arr))
+
+	// Pick first n elements
+	result := make([]T, n)
+	for i := 0; i < n; i++ {
+		result[i] = arr[randPerm[i]]
+	}
+
+	return result
 }

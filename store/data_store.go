@@ -65,6 +65,20 @@ func (d *DataStore) Get(key string) (any, error) {
 	return nil, nil
 }
 
+func (d *DataStore) GetValAndVersion(key string) (any, uint64, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	val, exist := d.store[key]
+	if exist {
+		latestVersion := val[len(val)-1]
+		return latestVersion.Value, latestVersion.Version, nil
+	}
+	return nil, 0, nil
+
+}
+
 // Put
 // store val against the key. if key already exist in the store
 // then find the most recent version and add new entry with most_recent_version+1

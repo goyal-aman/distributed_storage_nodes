@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"slices"
@@ -34,6 +35,7 @@ const (
 	// this is the max duration for which nodes are awaited for success of
 	// replicating write to peer nodes
 	WRITE_CONFIRMATION_TIMEOUT = 1 * time.Second
+	READ_CONFIRMATION_TIMEOUT  = 1 * time.Second
 )
 
 var (
@@ -48,7 +50,7 @@ var (
 
 	fReplicaCount = flag.String(
 		"replicacount", "",
-		"additional nodes in cluster which contains the copy of data. If replicacount is 2, that means there are total three copies - 1 ownernode and 2 replicanodes"+
+		"additional nodes in cluster which contains the copy of data. If replicacount is 2, that means there are total three copies, that is, 1 ownernode and 2 replicanodes"+
 			"replicaCount can be supplied to seed nodes. That is, if a node is started with seed arg then replicacount cannot be provided")
 )
 
@@ -550,10 +552,12 @@ func (n *Node) postReplicaData(c *gin.Context) {
 // # Query Params
 // writequorum: valid values in [-inf to ReplicaCount]. writequorum is number
 // replicas which must confirm write for write to be confirmed success within
-// WRITE_CONFIRMATION_TIMEOUT duration. Negative values means all replicas
-// must confirm write. Owner node is always required to confirm the write.
-// if for any reason owner node fails the write the request is failed and
-// not replicated to replicas
+// WRITE_CONFIRMATION_TIMEOUT duration.
+//   - Negative values means all REPLICAS must confirm write. Owner node is
+//     always required to confirm the write. if for any reason owner node fails
+//     the write the request is failed and not replicated to replicas
+//   - 0 means, no REPLCIA need to confirm the write.
+//   - 1 or more means those many number of REPLICA need to confirm the write
 //
 // include: comma separated list of strings. This is used to return additional
 // metadata in the response. Mainly added this for debugging purpose. Presently
@@ -639,7 +643,7 @@ func (n *Node) postData(c *gin.Context) {
 		c.JSON(http.StatusOK, types.PostDataResponse{
 			IsSuccess: true,
 			Message:   "OK",
-			Metadata: &types.PostDataMetaData{
+			Metadata: &types.PostAndGetDataMetaData{
 				Redirected: true,
 				ServicedBy: n.Id,
 				OwnedBy:    ownerNode.Id,
@@ -678,7 +682,11 @@ func (n *Node) postData(c *gin.Context) {
 	// get next replicacount number of nodes
 	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount)
 	if err != nil {
-		slog.With("err", err).Error("err in replicating write")
+		slog.With("err", err).Error("err in fetching replicas")
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Message: "err in fetching replicas",
+			Err:     err.Error(),
+		})
 		return
 	}
 
@@ -709,7 +717,7 @@ func (n *Node) postData(c *gin.Context) {
 	c.JSON(http.StatusOK, types.PostDataResponse{
 		IsSuccess: true,
 		Message:   "OK",
-		Metadata: &types.PostDataMetaData{
+		Metadata: &types.PostAndGetDataMetaData{
 			Redirected:   true,
 			ServicedBy:   n.Id,
 			OwnedBy:      ownerNode.Id,
@@ -720,50 +728,184 @@ func (n *Node) postData(c *gin.Context) {
 
 }
 
+func GetDefaultReadQuorum() string {
+	const DEFAULT_READ_QUORUM = "1"
+	// ReadQuorum<0 means owner node
+	// ReadQuorum=0, means current node
+	// ReadQuorum>0, means latest value among those many replicas
+	// ReadQuorum of N where N belongs [1, ReadReplica] means get
+	// value from any N REPLICA
+	return DEFAULT_READ_QUORUM
+}
+
+// getData
+// key: the term to be searched. Any valid string.
+// readquorum: valid ranges from [-1, REPLICA_COUNT]. For -1, value
+// is directly fetched from owner-node. For 0, the value is fetched
+// from current node, weather the current node is owner-node,
+// replica-node or any other node. It is possible the request
+// is received by current node which may not have the key-value
+// or any of its replica. For readquorum value N > 0, the value is
+// fetched from N replica nodes, and value corresponding to latest
+// version is returned.
 func (n *Node) getData(c *gin.Context) {
 	key := c.Query("key")
-	slog.With("key", key).Info("get data")
+	readquorum := c.Query("readquorum")
+	if strings.TrimSpace(readquorum) == "" {
+		readquorum = GetDefaultReadQuorum()
+	}
+
+	includeQueryParameter := c.Query("include")
+	includeSlice := strings.Split(includeQueryParameter, ",")
+
+	readquorumInt, err := strconv.Atoi(readquorum)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, types.GetDataResponse{
+			Message: "readquorum must be valid int",
+			Err:     err.Error(),
+		})
+		return
+	}
+
+	// readQuorum must be within [-1, REPLICA_COUNT]
+	if readquorumInt < -1 || readquorumInt > GVar_ReplicaCount {
+		c.JSON(http.StatusBadRequest, types.GetDataResponse{
+			Message: "valid value for readquorum lies between -1 and REPLICA_COUNT",
+			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
+		})
+		return
+	}
+
+	slog.With("key", key).With("readquorum", readquorumInt).Info("get data")
 
 	ar := helper.MapToArr(n.GossipV2.Read())
 	helper.SortNodeInPlace(ar)
 
 	token := helper.HashKey(key, TOTAL_SLOTS)
-	ownerNode, err := helper.GetNode(ar, token)
+
+	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
+		slog.With("err", err).Error("err in fetching replicas")
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Message: "err in fetching replicas",
+			Err:     err.Error(),
 		})
 		return
 	}
 
-	// is someother node own the key
-	// get data from it
-	if ownerNode.Id != n.Id {
-		respBody, rerr := apiclient.GetKeyValue(*ownerNode, key)
-		if rerr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": rerr.Error(),
+	ownerNode := ownerAndReplicas[0]
+	replicas := ownerAndReplicas[1:]
+
+	// if request lands on owner node, directly serve the data
+	// or if readQuorum is 0, that means read data from present node it self
+	if n.Id == ownerNode.Id || readquorumInt == 0 {
+		val, version, err := storagev2.GetValAndVersion(key)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, types.GetDataResponse{
+				Message: "error getting value from store",
+				Err:     err.Error(),
 			})
-		} else {
-			respBody["metadata"] = map[string]string{
-				"redirected":  "true",
-				"serviced_by": n.Id,
-				"owned_by":    ownerNode.Id,
-			}
-
-			c.JSON(http.StatusOK, respBody)
+			return
 		}
+		c.JSON(http.StatusOK, types.GetDataResponse{
+			// gin.H{"message": "ok", "value": val}
+			IsSuccess: true,
+			Message:   "OK",
+			Value:     val,
+			Version:   version,
+			Metadata: &types.PostAndGetDataMetaData{
+				Redirected:   false,
+				ServicedBy:   n.Id,
+				OwnedBy:      ownerNode.Id,
+				ReplicaCount: 1,
+			},
+		})
 		return
 	}
 
-	if val, err := storagev2.Get(key); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
-	} else {
-		c.JSON(http.StatusOK, gin.H{"message": "ok", "value": val})
+	// if replicacount <=0, then fetch from owner node
+	if readquorumInt < 0 {
+		params := map[string]string{
+			"key":        key,
+			"readquorum": readquorum,
+		}
+		respBody, rerr := apiclient.GetKeyValue(c, ownerNode, params)
+		if rerr != nil {
+			c.JSON(http.StatusInternalServerError, types.GetDataResponse{
+				Message: "error getting value owner node",
+				Err:     rerr.Error(),
+			})
+			return
+		}
 
+		c.JSON(http.StatusOK, types.GetDataResponse{
+			IsSuccess: true,
+			Value:     respBody.Value,
+			Version:   respBody.Version,
+			Message:   "OK",
+			Metadata: &types.PostAndGetDataMetaData{
+				Redirected:   true,
+				OwnedBy:      ownerNode.Id,
+				ServicedBy:   n.Id,
+				ReplicaCount: 1,
+			},
+		})
+
+		return
 	}
+
+	// for readquorum of N > 0, then get value from exactly
+	// N number of nodes and return the latest version
+	randomReplica := helper.PickNRandom(replicas, readquorumInt)
+	fn := func(ctx context.Context, n types.NodeGossip) (*types.GetDataResponse, error) {
+		params := map[string]string{
+			"key":        key,
+			"readquorum": "0",
+		}
+		return apiclient.GetKeyValue(ctx, n, params)
+	}
+	slog.With("random_replica", randomReplica).
+		With("replicas", replicas).
+		Info("key replicas")
+	res := helper.RunUntilMinSuccessOrTimeout(fn, randomReplica, len(randomReplica), READ_CONFIRMATION_TIMEOUT)
+
+	var latestVal interface{}
+	latestVersion := math.Inf(-1)
+
+	for _, r := range res {
+		if r.R != nil {
+			if float64(r.R.Version) > latestVersion {
+				latestVersion = float64(r.R.Version)
+				latestVal = r.R.Value
+			}
+		}
+	}
+
+	count := 0
+	for _, r := range res {
+		if r.E == nil {
+			count++
+		}
+	}
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "res") {
+		mislaneous["res"] = res
+	}
+
+	c.JSON(http.StatusOK, types.GetDataResponse{
+		IsSuccess: true,
+		Message:   "OK",
+		Value:     latestVal,
+		Version:   uint64(latestVersion),
+		Metadata: &types.PostAndGetDataMetaData{
+			Redirected:   true,
+			ServicedBy:   n.Id,
+			OwnedBy:      ownerNode.Id,
+			ReplicaCount: count,
+			Mislaneous:   mislaneous,
+		},
+	})
+
 }
 
 // nodedetail return details of node own the 'key'

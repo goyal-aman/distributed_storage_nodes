@@ -28,6 +28,9 @@ const (
 	V1_SNAPSHOT_STREAM types.Endpoint = "/v1/snapshot/stream"
 )
 
+// MapToQueryParamStr
+// return S where s= "?key1=val1&key2=val2"
+// if m is empty then ""
 func MapToQueryParamStr(m map[string]string) string {
 	var sb strings.Builder
 	len := len(m)
@@ -105,22 +108,43 @@ func PostKeyValue(node types.NodeGossip, key string, value any, queryParams map[
 	return errors.New(body.Err)
 }
 
-func GetKeyValue(node types.NodeGossip, key string) (map[string]interface{}, error) {
+func GetKeyValue(
+	ctx context.Context,
+	node types.NodeGossip,
+	queryParams map[string]string,
+) (*types.GetDataResponse, error) {
+	params := MapToQueryParamStr(queryParams)
 
-	resp, perr := http.Get(node.Host + V1_DATA.String() + fmt.Sprintf("?key=%s", key))
-	if perr != nil {
-		slog.Error("err redirect get key value", "dest_host", node.Host, "err", perr)
-		return nil, errors.Join(err.ErrRedirectGetKeyValue, perr)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		node.Host+V1_DATA.String()+params,
+		nil,
+	)
+	if err != nil {
+		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.Client{}
+	resp, gerr := client.Do(req)
+	if gerr != nil {
+		slog.Error("err redirect get key value", "dest_host", node.Host, "err", gerr)
+		return nil, errors.Join(pkgerr.ErrRedirectGetKeyValue, gerr)
+
+	}
+
 	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	body := map[string]interface{}{}
-	json.Unmarshal(respBytes, &body)
-	return body, nil
+	body := types.GetDataResponse{}
+	if err := json.Unmarshal(respBytes, &body); err != nil {
+		return nil, err
+	}
+	return &body, nil
 }
 
 func GetNodeMeta(host string) (map[string]interface{}, error) {
