@@ -599,6 +599,14 @@ func (n *Node) postData(c *gin.Context) {
 		writequorumInt = v
 	}
 
+	if writequorumInt < -1 || writequorumInt > GVar_ReplicaCount {
+		c.JSON(http.StatusBadRequest, types.GetDataResponse{
+			Message: "valid value for writequorum lies between -1 and REPLICA_COUNT",
+			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
+		})
+		return
+	}
+
 	includeQueryParameter := c.Query("include")
 	includeSlice := strings.Split(includeQueryParameter, ",")
 
@@ -679,8 +687,8 @@ func (n *Node) postData(c *gin.Context) {
 		return
 	}
 
-	// get next replicacount number of nodes
-	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount)
+	// get owner-node and next replicacount number of nodes
+	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount+1) // +1 for owner node
 	if err != nil {
 		slog.With("err", err).Error("err in fetching replicas")
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
@@ -740,7 +748,7 @@ func GetDefaultReadQuorum() string {
 
 // getData
 // key: the term to be searched. Any valid string.
-// readquorum: valid ranges from [-1, REPLICA_COUNT]. For -1, value
+// readquorum: valid ranges from [-1, REPLICA_COUNT). For -1, value
 // is directly fetched from owner-node. For 0, the value is fetched
 // from current node, weather the current node is owner-node,
 // replica-node or any other node. It is possible the request
