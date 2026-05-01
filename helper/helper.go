@@ -18,7 +18,10 @@ import (
 
 	"github.com/goyal-aman/distributed-storage-nodes/err"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
+	"go.opentelemetry.io/otel"
 )
+
+var tracer = otel.Tracer("github.com/goyal-aman/distributed_storage_nodes/helper")
 
 func ToBytesReader(a any) *bytes.Reader {
 	dataBytes, _ := json.Marshal(a)
@@ -172,13 +175,17 @@ func (c container[R]) String() string {
 // as soon as minSuccess number of workers are completed it cancels remaining workers
 // it waits for atmost 'timeout' duration before cancelling all workers.
 func RunUntilMinSuccessOrTimeout[I, R any](
+	ctx context.Context,
 	fn func(context.Context, I) (R, error),
 	work []I,
 	minSuccess int,
 	timeout time.Duration,
 ) []container[R] {
-	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), timeout)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	ctx, span := tracer.Start(ctxWithTimeout, "RunUntilMinSuccessOrTimeout")
+	defer span.End()
 
 	var success atomic.Int32
 
@@ -207,7 +214,7 @@ func RunUntilMinSuccessOrTimeout[I, R any](
 				}
 			case <-ctx.Done():
 			}
-		}(ctxWithTimeout)
+		}(ctx)
 	}
 
 	// special handling for when minSuccess requires is 0
