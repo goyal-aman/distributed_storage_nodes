@@ -1,5 +1,5 @@
 seed:
-	go run nodes/main.go -port=7770 -eokr=18446744073709551615 -host=http://0.0.0.0:7770 -replicacount=3
+	go run nodes/main.go -port=7770 -eokr=18446744073709551615 -host=http://0.0.0.0:7770 -replicacount=2
 node1:
 	go run nodes/main.go -port=7771 -eokr=14757395258967642112 -host=http://0.0.0.0:7771 -seed=http://0.0.0.0:7770
 node2:

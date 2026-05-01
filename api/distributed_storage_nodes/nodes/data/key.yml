@@ -5,18 +5,18 @@ info:
 
 http:
   method: GET
-  url: http://localhost:7770/v1/data?key=1&readquorum=2
+  url: http://localhost:7772/v1/data?key=1&readquorum=2
   params:
     - name: key
       value: "1"
+      type: query
+    - name: readquorum
+      value: "2"
       type: query
     - name: include
       value: res
       type: query
       disabled: true
-    - name: readquorum
-      value: "2"
-      type: query
   auth: inherit
 
 settings:

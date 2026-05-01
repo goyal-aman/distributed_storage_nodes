@@ -5,17 +5,19 @@ info:
 
 http:
   method: POST
-  url: http://localhost:7771/v1/gossip
+  url: http://localhost:7770/v1/gossip
   body:
     type: json
     data: |-
       [
         {
-          "Id": "1eff9b2e-de38-42b1-9df2-3bc897200b9b",
-          "Host": "http://0.0.0.0:7772",
-          "EndOfKeyRange": 4611686018427387904,
-          "LastUpdate": "2026-04-04T23:59:02.020065+05:30"
-        }
+            "Id": "aa081db482-9ec3-44a0-8c52-9d210fdc3706",
+            "Host": "http://0.0.0.0:7770",
+            "EndOfKeyRange": 18446744073709551615,
+            "LastUpdate": "2026-04-18T23:57:18.476583+05:30",
+            "State": "AVAILABLE",
+            "ReplicaCount": 3
+          }
       ]
   auth: inherit
 

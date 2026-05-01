@@ -536,7 +536,7 @@ func (n *Node) postReplicaData(c *gin.Context) {
 // postData
 // finds the owner node of key and store value against the key in that node.
 // value can be any type. Number of available nodes in the cluster must be
-// atleast REPLICA_COUNT for writes to be accepted. Writes are atempted to
+// atleast REPLICA_COUNT+1 for writes to be accepted. Writes are atempted to
 // be replicated to all replica nodes. However, confirmation is awated for
 // only WRITE_QUORUM number of nodes. Confirmation from replica nodes are
 // awaited for duration WRITE_CONFIRMATION_TIMEOUT. Data is always written
@@ -587,17 +587,20 @@ func (n *Node) postData(c *gin.Context) {
 	// for WriteQuorum > 0, then provided number of nodes are awaited
 	// before write is confirmed up until timout
 	writequorumInt := 0
-	if v, err := strconv.Atoi(writequorum); err != nil {
+	v, err := strconv.Atoi(writequorum)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, types.PostDataResponse{
 			Err:     err.Error(),
 			Message: "writequorum must be valid int",
 		})
 		return
-	} else if v < 0 {
-		writequorumInt = n.GossipV2.Size()
-	} else {
-		writequorumInt = v
 	}
+
+	// if v < 0 {
+	// writequorumInt = n.GossipV2.Size()
+	// } else {
+	writequorumInt = v
+	// }
 
 	if writequorumInt < -1 || writequorumInt > GVar_ReplicaCount {
 		c.JSON(http.StatusBadRequest, types.GetDataResponse{
@@ -791,7 +794,10 @@ func (n *Node) getData(c *gin.Context) {
 
 	token := helper.HashKey(key, TOTAL_SLOTS)
 
-	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount)
+	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount+1) // +1 for owner
+	slog.With("numOwnerAndReplicas", len(ownerAndReplicas)).
+		With("ownerAndReplicas", ownerAndReplicas).
+		Info("")
 	if err != nil {
 		slog.With("err", err).Error("err in fetching replicas")
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{

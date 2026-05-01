@@ -5,10 +5,10 @@ info:
 
 http:
   method: POST
-  url: http://localhost:7770/v1/data?writequorum=-1&include=res
+  url: http://localhost:7770/v1/data?writequorum=4&include=res
   params:
     - name: writequorum
-      value: "-1"
+      value: "4"
       type: query
     - name: include
       value: res
@@ -17,8 +17,8 @@ http:
     type: json
     data: |-
       {
-        "key":"1",
-        "value":"1"
+        "key": "1",
+        "value": "aman"
       }
   auth: inherit
 

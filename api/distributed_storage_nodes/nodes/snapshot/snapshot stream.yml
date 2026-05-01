@@ -5,7 +5,7 @@ info:
 
 http:
   method: GET
-  url: http://localhost:7770/v1/data/replicate?sourceid=37ef7d8e-2adf-4b74-bc7d-e61e110a32a3
+  url: http://localhost:7770/v1/snapshot/stream?sourceid=37ef7d8e-2adf-4b74-bc7d-e61e110a32a3
   params:
     - name: sourceid
       value: 37ef7d8e-2adf-4b74-bc7d-e61e110a32a3
