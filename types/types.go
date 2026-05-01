@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// global constants
+const (
+	GVar_ServiceName = "distributed_storage_nodes"
+)
+
 // NoteState
 type NodeState string
 

@@ -16,7 +16,14 @@ import (
 	pkgerr "github.com/goyal-aman/distributed-storage-nodes/err"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otel.Tracer("github.com/goyal-aman/distributed_storage_nodes/api_client")
 
 const (
 	V1_METADATA_NODE   types.Endpoint = "/v1/metadata/node"
@@ -53,7 +60,21 @@ func MapToQueryParamStr(m map[string]string) string {
 
 }
 
-func PostRawKeyValue(ctx context.Context, node types.NodeGossip, key string, value any, version uint64) error {
+func PostRawKeyValue(
+	ctx context.Context,
+	node types.NodeGossip,
+	key string,
+	value any,
+	version uint64,
+) error {
+	ctx, span := tracer.Start(ctx, "PostRawKeyValue")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("dest_node_id", node.Id),
+		attribute.String("dest_node_host", node.Host),
+	)
+
 	payload := types.HandlePostRawReq{
 		Key:     key,
 		Value:   value,
@@ -71,30 +92,63 @@ func PostRawKeyValue(ctx context.Context, node types.NodeGossip, key string, val
 	}
 	// 3. Set required headers
 	req.Header.Set("Content-Type", "application/json")
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	client := http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
 
-	client := http.Client{}
+	// spanCtx := trace.SpanFromContext(ctx).SpanContext()
+	// slog.Info("sender",
+	// 	"trace_id", spanCtx.TraceID().String(),
+	// 	"span_id", spanCtx.SpanID().String(),
+	// )
 
-	_, perr := client.Do(req)
+	resp, perr := client.Do(req)
 	if perr != nil {
 		slog.Error("err redirect raw post key value", "dest_host", node.Host, "err", perr)
 		// return fmt.Errorf("err occured while send init node", err)
 		return errors.Join(pkgerr.ErrRedirectPostKeyValue, perr)
 	}
+	defer resp.Body.Close()
+
+	// Drain the body so the connection can be reused
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	return nil
 }
 
-func PostKeyValue(node types.NodeGossip, key string, value any, queryParams map[string]string) error {
+func PostKeyValue(
+	ctx context.Context,
+	node types.NodeGossip,
+	key string,
+	value any,
+	queryParams map[string]string,
+) error {
+	ctx, span := tracer.Start(ctx, "PostKeyValue")
+	defer span.End()
+
 	payload := map[string]interface{}{
 		"key":   key,
 		"value": value,
 	}
 
-	resp, perr := http.Post(node.Host+V1_DATA.String()+MapToQueryParamStr(queryParams), "application/json", helper.ToBytesReader(payload))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		node.Host+V1_DATA.String()+MapToQueryParamStr(queryParams),
+		helper.ToBytesReader(payload),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	client := http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
+	resp, perr := client.Do(req)
 	if perr != nil {
 		slog.Error("err redirect post key value", "dest_host", node.Host, "err", perr)
 		return errors.Join(pkgerr.ErrRedirectPostKeyValue, perr)
 	}
+
+	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

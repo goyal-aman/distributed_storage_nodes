@@ -20,12 +20,19 @@ import (
 	"github.com/google/uuid"
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
 	pkgerr "github.com/goyal-aman/distributed-storage-nodes/err"
+	"github.com/goyal-aman/distributed-storage-nodes/nodetracer"
+
 	"github.com/goyal-aman/distributed-storage-nodes/gossip"
 	"github.com/goyal-aman/distributed-storage-nodes/helper"
 	apiclient "github.com/goyal-aman/distributed-storage-nodes/nodes/api_client"
 	"github.com/goyal-aman/distributed-storage-nodes/store"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otel.Tracer("github.com/goyal-aman/distributed_storage_nodes/nodes")
 
 const (
 	TOTAL_SLOTS               = uint64((1 << 64) - 1)
@@ -235,6 +242,10 @@ func NewNode() *Node {
 	})
 
 	slog.Info("node created", "node", node)
+
+	// initTracer
+	nodetracer.StartTracing(node.Id)
+
 	return node
 }
 
@@ -256,6 +267,8 @@ func main() {
 
 func initRouter(node *Node) *gin.Engine {
 	router := gin.New()
+
+	router.Use(otelgin.Middleware(types.GVar_ServiceName))
 
 	router.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		SkipPaths: []string{"/v1/gossip"},
@@ -510,6 +523,15 @@ func GetDefaultWriteQuorum() string {
 
 // postReplicaData
 func (n *Node) postReplicaData(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctx, span := tracer.Start(ctx, "postReplicaData")
+	defer span.End()
+
+	// spanCtx := trace.SpanFromContext(c.Request.Context()).SpanContext()
+	// slog.Info("receiver",
+	// 	"trace_id", spanCtx.TraceID().String(),
+	// )
+
 	body := types.HandlePostRawReq{}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, types.PostRawDataResponse{
@@ -564,8 +586,13 @@ func (n *Node) postReplicaData(c *gin.Context) {
 // support values are "res". This return the result from replica nodes in the
 // response metadata
 func (n *Node) postData(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctx, span := tracer.Start(ctx, "postData")
+	defer span.End()
+
 	body := map[string]interface{}{}
 	if err := c.ShouldBindJSON(&body); err != nil {
+		span.AddEvent("bad request")
 		c.JSON(http.StatusBadRequest, types.PostDataResponse{
 			Message: "something wrong with body",
 			Err:     err.Error(),
@@ -596,13 +623,14 @@ func (n *Node) postData(c *gin.Context) {
 		return
 	}
 
-	// if v < 0 {
-	// writequorumInt = n.GossipV2.Size()
-	// } else {
-	writequorumInt = v
-	// }
+	if v < 0 {
+		writequorumInt = GVar_ReplicaCount
+	} else {
+		writequorumInt = v
+	}
 
 	if writequorumInt < -1 || writequorumInt > GVar_ReplicaCount {
+		span.AddEvent("bad writequorum")
 		c.JSON(http.StatusBadRequest, types.GetDataResponse{
 			Message: "valid value for writequorum lies between -1 and REPLICA_COUNT",
 			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
@@ -610,8 +638,16 @@ func (n *Node) postData(c *gin.Context) {
 		return
 	}
 
+	span.SetAttributes(attribute.Int("writequorum", writequorumInt))
+
 	includeQueryParameter := c.Query("include")
 	includeSlice := strings.Split(includeQueryParameter, ",")
+
+	// init mislaneous
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "res") {
+		mislaneous["trace"] = span.SpanContext().TraceID().String()
+	}
 
 	ar := helper.MapToArr(n.GossipV2.Read())
 	sort.Slice(ar, func(a, b int) bool {
@@ -629,6 +665,14 @@ func (n *Node) postData(c *gin.Context) {
 		return
 	}
 
+	span.SetAttributes(
+		attribute.String("currentNode", n.Id),
+		attribute.String("currentHost", n.Host),
+		attribute.String("ownerNodeId", ownerNode.Id),
+		attribute.String("ownerNodeHost", ownerNode.Host),
+		attribute.String("key", key),
+	)
+
 	// slog.With("current_node", n.Id).
 	// 	With("owner_node", ownerNode.Id).
 	// 	With("key", key).
@@ -638,19 +682,28 @@ func (n *Node) postData(c *gin.Context) {
 
 	// is someother node own the key
 	// get data from it
+	span.SetAttributes(
+		attribute.Bool("is_owner_node", ownerNode.Id == n.Id),
+	)
+
 	if ownerNode.Id != n.Id {
+		span.AddEvent("redirect to ownernode")
 		queryParams := map[string]string{
 			"writequorum": writequorum,
 			"redirected":  "true",
 		}
-		rerr := apiclient.PostKeyValue(*ownerNode, key, value, queryParams)
+		rerr := apiclient.PostKeyValue(ctx, *ownerNode, key, value, queryParams)
 		if rerr != nil {
 			c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 				Message: "err posting value to owner node",
 				Err:     rerr.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
 			})
 			return
 		}
+
 		c.JSON(http.StatusOK, types.PostDataResponse{
 			IsSuccess: true,
 			Message:   "OK",
@@ -658,17 +711,22 @@ func (n *Node) postData(c *gin.Context) {
 				Redirected: true,
 				ServicedBy: n.Id,
 				OwnedBy:    ownerNode.Id,
+				Mislaneous: mislaneous,
 			},
 		})
-
 		return
 	}
 
+	span.SetAttributes(
+		attribute.Int("available_gossip_nodes", n.GossipV2.NumNodeInState(types.AVAILABLE)),
+		attribute.Int("all_gossip_nodes", n.GossipV2.Size()),
+	)
 	// send request to next replicacount number of nodes
 	// wait for only REPLICA_COUNT number of nodes
 	// if number of available nodes in the cluster
 	// are less then REPLICA_COUNT then fail the write
 	if n.GossipV2.NumNodeInState(types.AVAILABLE) < GVar_ReplicaCount {
+		span.AddEvent("not enough nodes in cluster")
 		c.JSON(http.StatusFailedDependency, types.PostDataResponse{
 			Err:     pkgerr.ErrNotEnoughNodes.Error(),
 			Message: "available nodes in cluster should be atleast equal to replicacount",
@@ -681,18 +739,26 @@ func (n *Node) postData(c *gin.Context) {
 	// with EndOfKeyRange just less than curr node.EndOfKeyRange
 	// and State == BootStrapping then this write needs to be replicated there.
 	// Later on I'll check whether this can be achieved by raft algo
+	span.AddEvent("persisting key val to curr store")
+	ctx, storeOwnerNodeSpan := tracer.Start(ctx, "Storing in owner node")
 	newVersion, err := storagev2.Put(key, value)
 	if err != nil {
+		storeOwnerNodeSpan.End()
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 			Message: "error in writing value to owner node, write not replicated to replicas",
 			Err:     err.Error(),
 		})
 		return
 	}
+	storeOwnerNodeSpan.End()
+	span.AddEvent("persisted key val to curr store")
 
 	// get owner-node and next replicacount number of nodes
+	ctx, nNodeSpan := tracer.Start(ctx, "getting N nodes")
 	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount+1) // +1 for owner node
 	if err != nil {
+		nNodeSpan.End()
+		span.AddEvent("err in getting owner & replicas")
 		slog.With("err", err).Error("err in fetching replicas")
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 			Message: "err in fetching replicas",
@@ -700,6 +766,11 @@ func (n *Node) postData(c *gin.Context) {
 		})
 		return
 	}
+	nNodeSpan.End()
+	span.AddEvent("received owners and replicas")
+	span.SetAttributes(
+		attribute.Int("num_owner_and_replicas", len(ownerAndReplicas)),
+	)
 
 	// owner := ownerAndReplicas[0]
 	replicas := ownerAndReplicas[1:]
@@ -711,8 +782,9 @@ func (n *Node) postData(c *gin.Context) {
 	// 	With("gossip", n.GossipV2.Read()).
 	// 	Info("calling post replica data")
 
-	res := helper.RunUntilMinSuccessOrTimeout(f, replicas, writequorumInt, WRITE_CONFIRMATION_TIMEOUT)
-
+	ctx, fanoutSpan := tracer.Start(ctx, "fanning out")
+	res := helper.RunUntilMinSuccessOrTimeout(ctx, f, replicas, writequorumInt, WRITE_CONFIRMATION_TIMEOUT)
+	fanoutSpan.End()
 	count := 0
 	for _, r := range res {
 		if r.E == nil {
@@ -720,10 +792,10 @@ func (n *Node) postData(c *gin.Context) {
 		}
 	}
 
-	mislaneous := map[string]interface{}{}
-	if slices.Contains(includeSlice, "res") {
-		mislaneous["res"] = res
-	}
+	// if slices.Contains(includeSlice, "res") {
+	// 	mislaneous["res"] = res
+	// 	mislaneous["trace"] = span.SpanContext().TraceID().String()
+	// }
 
 	c.JSON(http.StatusOK, types.PostDataResponse{
 		IsSuccess: true,
@@ -881,7 +953,7 @@ func (n *Node) getData(c *gin.Context) {
 	slog.With("random_replica", randomReplica).
 		With("replicas", replicas).
 		Info("key replicas")
-	res := helper.RunUntilMinSuccessOrTimeout(fn, randomReplica, len(randomReplica), READ_CONFIRMATION_TIMEOUT)
+	res := helper.RunUntilMinSuccessOrTimeout(c.Request.Context(), fn, randomReplica, len(randomReplica), READ_CONFIRMATION_TIMEOUT)
 
 	var latestVal interface{}
 	latestVersion := math.Inf(-1)
