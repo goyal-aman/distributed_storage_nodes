@@ -1,15 +1,19 @@
 package store
 
 import (
+	"context"
 	"log/slog"
 	"sort"
 	"sync"
 
 	"github.com/goyal-aman/distributed-storage-nodes/types"
+	"go.opentelemetry.io/otel"
 )
 
 // Compile time check
 var _ Store = (*DataStore)(nil)
+
+var tracer = otel.Tracer("github.com/goyal-aman/distributed_storage_nodes/store")
 
 type KeyFilter func(key string) bool
 
@@ -65,7 +69,13 @@ func (d *DataStore) Get(key string) (any, error) {
 	return nil, nil
 }
 
-func (d *DataStore) GetValAndVersion(key string) (any, uint64, error) {
+func (d *DataStore) GetValAndVersion(
+	ctx context.Context,
+	key string,
+) (any, uint64, error) {
+	ctx, span := tracer.Start(ctx, "Get Val & Version from Store")
+	defer span.End()
+
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	d.mu.RLock()

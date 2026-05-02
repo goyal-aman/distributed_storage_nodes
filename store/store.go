@@ -1,10 +1,12 @@
 package store
 
+import "context"
+
 type Store interface {
 	// Get get by key
 	Get(key string) (any, error)
 
-	GetValAndVersion(key string) (any, uint64, error)
+	GetValAndVersion(ctx context.Context, key string) (any, uint64, error)
 
 	// Put store value againt key
 	Put(key string, value interface{}) (uint64, error)

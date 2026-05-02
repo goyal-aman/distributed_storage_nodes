@@ -166,6 +166,8 @@ func GetKeyValue(
 	node types.NodeGossip,
 	queryParams map[string]string,
 ) (*types.GetDataResponse, error) {
+	ctx, span := tracer.Start(ctx, "Get Key Value")
+	defer span.End()
 	params := MapToQueryParamStr(queryParams)
 
 	req, err := http.NewRequestWithContext(
@@ -179,7 +181,8 @@ func GetKeyValue(
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := http.Client{}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	client := http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
 	resp, gerr := client.Do(req)
 	if gerr != nil {
 		slog.Error("err redirect get key value", "dest_host", node.Host, "err", gerr)

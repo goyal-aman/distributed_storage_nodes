@@ -587,7 +587,7 @@ func (n *Node) postReplicaData(c *gin.Context) {
 // response metadata
 func (n *Node) postData(c *gin.Context) {
 	ctx := c.Request.Context()
-	ctx, span := tracer.Start(ctx, "postData")
+	ctx, span := tracer.Start(ctx, "Post Data Handler")
 	defer span.End()
 
 	// prepare metadata for response
@@ -596,7 +596,7 @@ func (n *Node) postData(c *gin.Context) {
 
 	// init mislaneous
 	mislaneous := map[string]interface{}{}
-	if slices.Contains(includeSlice, "res") {
+	if slices.Contains(includeSlice, "trace") {
 		mislaneous["trace"] = span.SpanContext().TraceID().String()
 	}
 
@@ -851,41 +851,63 @@ func GetDefaultReadQuorum() string {
 // fetched from N replica nodes, and value corresponding to latest
 // version is returned.
 func (n *Node) getData(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctx, span := tracer.Start(ctx, "Get Data Handler")
+	defer span.End()
+
 	key := c.Query("key")
 	readquorum := c.Query("readquorum")
 	if strings.TrimSpace(readquorum) == "" {
 		readquorum = GetDefaultReadQuorum()
+		span.AddEvent("using default readquorum")
 	}
+	span.SetAttributes(
+		attribute.String("readquorum", readquorum),
+	)
 
 	includeQueryParameter := c.Query("include")
 	includeSlice := strings.Split(includeQueryParameter, ",")
+	// init mislaneous
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "trace") {
+		mislaneous["trace"] = span.SpanContext().TraceID().String()
+	}
 
 	readquorumInt, err := strconv.Atoi(readquorum)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, types.GetDataResponse{
 			Message: "readquorum must be valid int",
 			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
 
 	// readQuorum must be within [-1, REPLICA_COUNT]
 	if readquorumInt < -1 || readquorumInt > GVar_ReplicaCount {
+		span.RecordError(pkgerr.ErrInvalidReadQuorumValue)
+		span.AddEvent("invalid readquorum")
 		c.JSON(http.StatusBadRequest, types.GetDataResponse{
 			Message: "valid value for readquorum lies between -1 and REPLICA_COUNT",
 			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
 
 	slog.With("key", key).With("readquorum", readquorumInt).Info("get data")
 
+	ctx, findOwnerAndReplicaSpan := tracer.Start(ctx, "Find Owner And Replica Nodes")
 	ar := helper.MapToArr(n.GossipV2.Read())
 	helper.SortNodeInPlace(ar)
-
 	token := helper.HashKey(key, TOTAL_SLOTS)
-
 	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount+1) // +1 for owner
+	findOwnerAndReplicaSpan.End()
+
 	slog.With("numOwnerAndReplicas", len(ownerAndReplicas)).
 		With("ownerAndReplicas", ownerAndReplicas).
 		Info("")
@@ -894,6 +916,9 @@ func (n *Node) getData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 			Message: "err in fetching replicas",
 			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
@@ -903,17 +928,25 @@ func (n *Node) getData(c *gin.Context) {
 
 	// if request lands on owner node, directly serve the data
 	// or if readQuorum is 0, that means read data from present node it self
+	span.SetAttributes(attribute.Bool("is_owner_node", n.Id == ownerNode.Id))
 	if n.Id == ownerNode.Id || readquorumInt == 0 {
-		val, version, err := storagev2.GetValAndVersion(key)
+		ctx, ownerNodeSpan := tracer.Start(ctx, "Handling In Curr Node")
+		defer ownerNodeSpan.End()
+
+		val, version, err := storagev2.GetValAndVersion(ctx, key)
 		if err != nil {
+			span.RecordError(err)
+			span.AddEvent("error getting value from store")
 			c.JSON(http.StatusInternalServerError, types.GetDataResponse{
 				Message: "error getting value from store",
 				Err:     err.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
 			})
 			return
 		}
 		c.JSON(http.StatusOK, types.GetDataResponse{
-			// gin.H{"message": "ok", "value": val}
 			IsSuccess: true,
 			Message:   "OK",
 			Value:     val,
@@ -923,6 +956,7 @@ func (n *Node) getData(c *gin.Context) {
 				ServicedBy:   n.Id,
 				OwnedBy:      ownerNode.Id,
 				ReplicaCount: 1,
+				Mislaneous:   mislaneous,
 			},
 		})
 		return
@@ -930,15 +964,22 @@ func (n *Node) getData(c *gin.Context) {
 
 	// if replicacount <=0, then fetch from owner node
 	if readquorumInt < 0 {
+		ctx, ownerNodeSpan := tracer.Start(ctx, "Fetch From Owner Node")
+		defer ownerNodeSpan.End()
 		params := map[string]string{
 			"key":        key,
 			"readquorum": readquorum,
 		}
-		respBody, rerr := apiclient.GetKeyValue(c, ownerNode, params)
+		respBody, rerr := apiclient.GetKeyValue(ctx, ownerNode, params)
 		if rerr != nil {
+			span.RecordError(rerr)
+			span.AddEvent("error getting value owner node")
 			c.JSON(http.StatusInternalServerError, types.GetDataResponse{
 				Message: "error getting value owner node",
 				Err:     rerr.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
 			})
 			return
 		}
@@ -953,6 +994,7 @@ func (n *Node) getData(c *gin.Context) {
 				OwnedBy:      ownerNode.Id,
 				ServicedBy:   n.Id,
 				ReplicaCount: 1,
+				Mislaneous:   mislaneous,
 			},
 		})
 
@@ -961,6 +1003,7 @@ func (n *Node) getData(c *gin.Context) {
 
 	// for readquorum of N > 0, then get value from exactly
 	// N number of nodes and return the latest version
+	ctx, ReadFromReplicaSpan := tracer.Start(ctx, "Read From Replica")
 	randomReplica := helper.PickNRandom(replicas, readquorumInt)
 	fn := func(ctx context.Context, n types.NodeGossip) (*types.GetDataResponse, error) {
 		params := map[string]string{
@@ -972,7 +1015,7 @@ func (n *Node) getData(c *gin.Context) {
 	slog.With("random_replica", randomReplica).
 		With("replicas", replicas).
 		Info("key replicas")
-	res := helper.RunUntilMinSuccessOrTimeout(c.Request.Context(), fn, randomReplica, len(randomReplica), READ_CONFIRMATION_TIMEOUT)
+	res := helper.RunUntilMinSuccessOrTimeout(ctx, fn, randomReplica, len(randomReplica), READ_CONFIRMATION_TIMEOUT)
 
 	var latestVal interface{}
 	latestVersion := math.Inf(-1)
@@ -985,6 +1028,7 @@ func (n *Node) getData(c *gin.Context) {
 			}
 		}
 	}
+	ReadFromReplicaSpan.End()
 
 	count := 0
 	for _, r := range res {
@@ -992,7 +1036,7 @@ func (n *Node) getData(c *gin.Context) {
 			count++
 		}
 	}
-	mislaneous := map[string]interface{}{}
+
 	if slices.Contains(includeSlice, "res") {
 		mislaneous["res"] = res
 	}
