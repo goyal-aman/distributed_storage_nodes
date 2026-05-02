@@ -590,12 +590,25 @@ func (n *Node) postData(c *gin.Context) {
 	ctx, span := tracer.Start(ctx, "postData")
 	defer span.End()
 
+	// prepare metadata for response
+	includeQueryParameter := c.Query("include")
+	includeSlice := strings.Split(includeQueryParameter, ",")
+
+	// init mislaneous
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "res") {
+		mislaneous["trace"] = span.SpanContext().TraceID().String()
+	}
+
 	body := map[string]interface{}{}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		span.AddEvent("bad request")
 		c.JSON(http.StatusBadRequest, types.PostDataResponse{
 			Message: "something wrong with body",
 			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
@@ -634,20 +647,14 @@ func (n *Node) postData(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, types.GetDataResponse{
 			Message: "valid value for writequorum lies between -1 and REPLICA_COUNT",
 			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
 
 	span.SetAttributes(attribute.Int("writequorum", writequorumInt))
-
-	includeQueryParameter := c.Query("include")
-	includeSlice := strings.Split(includeQueryParameter, ",")
-
-	// init mislaneous
-	mislaneous := map[string]interface{}{}
-	if slices.Contains(includeSlice, "res") {
-		mislaneous["trace"] = span.SpanContext().TraceID().String()
-	}
 
 	ar := helper.MapToArr(n.GossipV2.Read())
 	sort.Slice(ar, func(a, b int) bool {
@@ -661,6 +668,9 @@ func (n *Node) postData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 			Err:     err.Error(),
 			Message: "err while getting owner node",
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
@@ -730,6 +740,9 @@ func (n *Node) postData(c *gin.Context) {
 		c.JSON(http.StatusFailedDependency, types.PostDataResponse{
 			Err:     pkgerr.ErrNotEnoughNodes.Error(),
 			Message: "available nodes in cluster should be atleast equal to replicacount",
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
@@ -747,6 +760,9 @@ func (n *Node) postData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 			Message: "error in writing value to owner node, write not replicated to replicas",
 			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
@@ -763,6 +779,9 @@ func (n *Node) postData(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
 			Message: "err in fetching replicas",
 			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
 		})
 		return
 	}
