@@ -8,7 +8,8 @@ node3:
 	go run nodes/main.go -port=7773 -eokr=7378697629483821056 -host=http://0.0.0.0:7773 -seed=http://0.0.0.0:7770
 node4:
 	go run nodes/main.go -port=7774 -eokr=3689348814741910528 -host=http://0.0.0.0:7774 -seed=http://0.0.0.0:7770
-
+test:
+	go test -v ./...
 # no longer needed, cluster is removed
 # node1:
 # 	go run nodes/main.go -port=7771

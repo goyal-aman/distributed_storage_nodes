@@ -92,6 +92,21 @@ func (e StoreEntry) Clone() StoreEntry {
 	return StoreEntry{Value: e.Value, Version: e.Version, IsReplica: e.IsReplica}
 }
 
+type StoreEntryV2 struct {
+	Value []byte
+
+	Version Version
+
+	// IsReplica
+	// if true is means the entry was replicated from owner-node
+	// to current node store
+	IsReplica bool
+}
+
+func (e StoreEntryV2) Clone() StoreEntryV2 {
+	return StoreEntryV2{Value: e.Value, Version: e.Version, IsReplica: e.IsReplica}
+}
+
 // replication event
 type ReplicationEventType string
 
@@ -181,4 +196,11 @@ type GetDataResponse struct {
 	Message   string                  `json:"message,omitempty"`
 	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
 	Err       string                  `json:"error,omitempty"`
+}
+
+type Version struct {
+	// TimestampEpochUtcInSec
+	// epoch with precision of seconds in UTC timezone
+	TimestampEpochUtcInSec int64
+	Count                  uint64
 }

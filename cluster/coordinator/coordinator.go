@@ -72,7 +72,7 @@ func (c *Cluster) AddNode(node types.StorageNode) error {
 		index, err := FindInsertIndex(c.nodes, endOfKeyRange)
 		if err != nil {
 			slog.Error("err in finding nextnode", "err", err, "index", index)
-			return fmt.Errorf("err in addNode", err)
+			return fmt.Errorf("err in addNode: %w", err)
 		}
 
 		// now that we have index, lets start replication process
@@ -102,12 +102,12 @@ func (c *Cluster) InitNode(node types.StorageNode) error {
 	resp, err := http.Post(node.Host+initNodeEndPoint, "application/json", bytesReader)
 	if err != nil {
 		slog.Error("err when init node", "Id", node.Id, "Host", node.Host, "EndOfKeyRange", node.EndOfKeyRange)
-		return fmt.Errorf("err occured while send init node", err)
+		return fmt.Errorf("err occured while send init node %w", err)
 	}
 
 	respBytes := make([]byte, 0)
 	resp.Body.Read(respBytes)
-	slog.Info("init node success", "Id", node.Id, "Host", node.Host, "EndOfKeyRange", node.EndOfKeyRange, "resp_body", string(respBytes), "resp_status", resp.StatusCode, err)
+	slog.Info("init node success", slog.String("Id", node.Id), slog.String("Host", node.Host), slog.Uint64("EndOfKeyRange", node.EndOfKeyRange), slog.String("resp_body", string(respBytes)), slog.Int("resp_status", resp.StatusCode), slog.String("err", err.Error()))
 	return nil
 }
 
@@ -133,7 +133,7 @@ func sendGossip(newNode, oldNode types.StorageNode) {
 
 	resp, err := http.Post(oldNode.Host+updateGossipEndpoint, "application/json", helper.ToBytesReader(payload))
 	if err != nil {
-		slog.Error("err when sendGossip", "oldHost", oldNode.Host, "newHost", newNode.Host, err)
+		slog.Error("err when sendGossip oldHost %s newHost %s, error: %w", oldNode.Host, newNode.Host, slog.String("err", err.Error()))
 		// return fmt.Errorf("err occured while send init node", err)
 		return
 	}

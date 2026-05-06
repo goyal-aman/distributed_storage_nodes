@@ -167,7 +167,7 @@ func (c container[R]) String() string {
 	if c.E != nil {
 		errStr = c.E.Error()
 	}
-	return fmt.Sprintf("{R:%s, Err:%s}", c.R, errStr)
+	return fmt.Sprintf("{R:%v, Err:%s}", c.R, errStr)
 }
 
 // RunUntilMinSuccessOrTimeout

@@ -46,7 +46,7 @@ const (
 )
 
 var (
-	storagev2 = store.NewDataStore()
+	storagev2 store.Store
 )
 
 var (
@@ -62,7 +62,8 @@ var (
 )
 
 var (
-	GVar_PORT int
+	GVar_PORT   int
+	GVar_NodeID string
 
 	// GVar_Host is host address of current node where other nodes will contact on
 	GVar_Host          string
@@ -80,6 +81,9 @@ func init() {
 
 	// handle Port
 	GVar_PORT = *fPort
+
+	// handle node Id
+	GVar_NodeID = uuid.New().String()
 
 	// handle host
 	if fHost == nil || len(*fHost) == 0 {
@@ -135,6 +139,10 @@ func init() {
 		GVar_EndOfKeyRange = endOfKeyRange
 		slog.Info("EndOfKeyRange", "eokr", GVar_EndOfKeyRange)
 	}
+
+	// init storage
+	// logPath := fmt.Sprintf("./%s_commit.log", GVar_NodeID)
+	storagev2 = store.NewDataStore()
 }
 
 type Node struct {
@@ -223,7 +231,7 @@ func NewNode() *Node {
 
 	slog.With("GVar_replicacount", GVar_ReplicaCount).Info("creating node")
 	node := &Node{
-		Id:            uuid.New().String(),
+		Id:            GVar_NodeID,
 		Host:          GVar_Host,
 		GossipV2:      gossipNodesV2,
 		EndOfKeyRange: GVar_EndOfKeyRange,
