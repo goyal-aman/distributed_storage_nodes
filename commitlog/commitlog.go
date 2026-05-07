@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"log/slog"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -16,7 +17,7 @@ import (
 
 type ICommitLog interface {
 	Write(ctx context.Context, version types.Version, key string, value []byte) error
-	ReadAll() ([]lsmtreetype.LogItem, error)
+	Replay() ([]lsmtreetype.LogItem, error)
 }
 
 // compile time check
@@ -73,11 +74,19 @@ func (c *CommitLog) checkSum(s string) uint32 {
 	return crc32.ChecksumIEEE([]byte(s))
 }
 
-// ReadAll
+// Replay
 // returns all items available in commitlog as slice of `lsmtreetype.LogItem`
-// or returns err if something goes wrong.
-func (c *CommitLog) ReadAll() ([]lsmtreetype.LogItem, error) {
-	return c.readHumanReadableCommitLog()
+// in the order of oldest event to newest event. Or returns err if something
+// goes wrong.
+func (c *CommitLog) Replay() ([]lsmtreetype.LogItem, error) {
+	items, err := c.readHumanReadableCommitLog()
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(items, func(a, b lsmtreetype.LogItem) int {
+		return a.CmpOrder(b)
+	})
+	return items, nil
 }
 
 // readHumanReadableCommitLog

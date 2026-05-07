@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/goyal-aman/distributed-storage-nodes/cluster/coordinator"
 	pkgerr "github.com/goyal-aman/distributed-storage-nodes/err"
+	"github.com/goyal-aman/distributed-storage-nodes/lsmtree"
 	"github.com/goyal-aman/distributed-storage-nodes/nodetracer"
 
 	"github.com/goyal-aman/distributed-storage-nodes/gossip"
@@ -46,7 +47,8 @@ const (
 )
 
 var (
-	storagev2 store.Store
+	storagev2  store.Store
+	lsmstorage lsmtree.ILSMTree
 )
 
 var (
@@ -59,6 +61,11 @@ var (
 		"replicacount", "",
 		"additional nodes in cluster which contains the copy of data. If replicacount is 2, that means there are total three copies, that is, 1 ownernode and 2 replicanodes"+
 			"replicaCount can be supplied to seed nodes. That is, if a node is started with seed arg then replicacount cannot be provided")
+
+	fLogPathPrefix = flag.String(
+		"logpathprefix", "./commitlog_logpath",
+		"this is log path prefix for commitlog. For example './commitlog/goes/here'",
+	)
 )
 
 var (
@@ -70,6 +77,7 @@ var (
 	GVar_SeedNodes     []string
 	GVar_ReplicaCount  int
 	GVar_EndOfKeyRange uint64
+	GVar_LogPathPrefix string
 )
 
 var (
@@ -140,9 +148,21 @@ func init() {
 		slog.Info("EndOfKeyRange", "eokr", GVar_EndOfKeyRange)
 	}
 
+	// logPathPrefix
+	GVar_LogPathPrefix = *fLogPathPrefix
+
 	// init storage
 	// logPath := fmt.Sprintf("./%s_commit.log", GVar_NodeID)
 	storagev2 = store.NewDataStore()
+
+	// init lsmtree
+	if lsmtree, err := lsmtree.NewLSMTree(GVar_LogPathPrefix); err != nil {
+		slog.Error("error creating LSMTreee", "err", err)
+		os.Exit(1)
+	} else {
+		lsmstorage = lsmtree
+	}
+
 }
 
 type Node struct {
@@ -710,6 +730,18 @@ func (n *Node) postData(c *gin.Context) {
 			"writequorum": writequorum,
 			"redirected":  "true",
 		}
+
+		// valueBytes, err := json.Marshal(value)
+		// if err != nil {
+		// 	c.JSON(http.StatusBadRequest, types.PostDataResponse{
+		// 		Message: "err marshalling value to []byte",
+		// 		Err:     err.Error(),
+		// 		Metadata: &types.PostAndGetDataMetaData{
+		// 			Mislaneous: mislaneous,
+		// 		},
+		// 	})
+		// 	return
+		// }
 		rerr := apiclient.PostKeyValue(ctx, *ownerNode, key, value, queryParams)
 		if rerr != nil {
 			c.JSON(http.StatusInternalServerError, types.PostDataResponse{
@@ -1091,6 +1123,7 @@ func (n *Node) getMetaDataKey(c *gin.Context) {
 }
 
 func (n *Node) getSnapshotStream(c *gin.Context) {
+
 	slog.Info("in start replication")
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")

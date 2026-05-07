@@ -92,7 +92,7 @@ func TestCommitLog_Write(t *testing.T) {
 				}
 			}
 
-			receivedLogItems, err := commitLog.ReadAll()
+			receivedLogItems, err := commitLog.Replay()
 			if err != nil {
 				t.Errorf("error in reading commitlog: %s", err.Error())
 			}

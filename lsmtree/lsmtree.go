@@ -7,6 +7,7 @@ import (
 
 	"github.com/goyal-aman/distributed-storage-nodes/commitlog"
 	"github.com/goyal-aman/distributed-storage-nodes/sequencegenerator"
+	"github.com/goyal-aman/distributed-storage-nodes/store"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
 	"go.opentelemetry.io/otel"
 )
@@ -21,19 +22,32 @@ type ILSMTree interface {
 		ctx context.Context,
 		key string,
 		val []byte,
-		isReplica bool,
-	) (*types.Version, error)
-}
+	) (types.Version, error)
 
-type KeyFilter func(key string) bool
+	PutRaw(
+		ctx context.Context,
+		key string,
+		val []byte,
+		version types.Version,
+		isReplica bool,
+	) error
+
+	Get(
+		ctx context.Context,
+		key string,
+	) ([]byte, *types.Version, error)
+
+	Snapshot(
+		ctx context.Context,
+		filter store.KeyFilter,
+		opts ...store.Opts) (store.Snapshot, store.PostWriteHookCncl)
+
+	Size() int
+}
 
 var (
 	AllKeys = func(key string) bool { return true }
 )
-
-type Opts func(*LSMTree)
-
-type PostWriteHookCncl func()
 
 // compile time check
 var _ ILSMTree = (*LSMTree)(nil)
@@ -79,16 +93,16 @@ func NewLSMTree(logPath string) (ILSMTree, error) {
 func (d *LSMTree) Get(
 	ctx context.Context,
 	key string,
-) (any, error) {
+) ([]byte, *types.Version, error) {
 	ctx, span := tracer.Start(ctx, "Get From LSMTree")
 	defer span.End()
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	val, exist := d.inMemStore[key]
 	if exist {
-		return val.Value, nil
+		return val.Value, &val.Version, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // Put
@@ -98,35 +112,58 @@ func (d *LSMTree) Put(
 	ctx context.Context,
 	key string,
 	val []byte,
-	isReplica bool,
-) (*types.Version, error) {
+) (types.Version, error) {
 	ctx, span := tracer.Start(ctx, "Put in LSMTree")
 	defer span.End()
 	version := d.seqGenerator.Next()
-	return d.putRaw(ctx, key, val, version, false)
+	if err := d.PutRaw(ctx, key, val, version, false); err != nil {
+		var zero types.Version
+		return zero, err
+	}
+	return version, nil
 }
 
 // Put
 // store val against the key.
-func (d *LSMTree) putRaw(
+func (d *LSMTree) PutRaw(
 	ctx context.Context,
 	key string,
 	val []byte,
 	version types.Version,
 	isReplica bool, // not being used, figure out how to handle this in commitlog
-) (*types.Version, error) {
+) error {
 	ctx, span := tracer.Start(ctx, "PutRaw in LSMTree")
 	defer span.End()
 
 	d.mu.Lock()
 	err := d.commitLog.Write(ctx, version, key, val)
 	if err != nil {
-		return nil, fmt.Errorf("error writting to commitlog: %w", err)
+		return fmt.Errorf("error writting to commitlog: %w", err)
 	}
 
 	d.inMemStore[key] = types.StoreEntryV2{Value: val, Version: version}
 
 	d.mu.Unlock()
 
-	return &version, nil
+	return nil
+}
+
+// Snapshot
+// this is a placeholder method to replace store.DataStore
+// in node. I'll this about how to implement snapshot
+// in LSMTree later also whether or not its even needed
+func (l *LSMTree) Snapshot(
+	ctx context.Context,
+	filter store.KeyFilter,
+	opts ...store.Opts) (store.Snapshot, store.PostWriteHookCncl) {
+	return nil, nil
+}
+
+// Size
+// returns num keys in inMemStore for now
+// to make it compatible with store.DataStore.
+// Ideally it should return the total number of
+// unique keys available in LSMTree
+func (l *LSMTree) Size() int {
+	return len(l.inMemStore)
 }
