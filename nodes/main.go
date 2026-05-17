@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -156,7 +157,7 @@ func init() {
 	storagev2 = store.NewDataStore()
 
 	// init lsmtree
-	if lsmtree, err := lsmtree.NewLSMTree(GVar_LogPathPrefix); err != nil {
+	if lsmtree, err := lsmtree.NewLSMTree(GVar_LogPathPrefix, GVar_NodeID); err != nil {
 		slog.Error("error creating LSMTreee", "err", err)
 		os.Exit(1)
 	} else {
@@ -319,11 +320,14 @@ func initRouter(node *Node) *gin.Engine {
 	// if owner node receives the data,
 	// it also replicates to replicas
 	router.POST(apiclient.V1_DATA.String(), node.postData)
+	router.POST(apiclient.V2_DATA.String(), node.postDataV2)
 	router.GET(apiclient.V1_DATA.String(), node.getData)
+	router.GET(apiclient.V2_DATA.String(), node.getDataV2)
 
 	// V1_DATA_REPLICA directly persists the data
 	// this endponit doesn't have any routing inteligence
 	router.POST(apiclient.V1_REPLICA_DATA.String(), node.postReplicaData)
+	router.POST(apiclient.V2_REPLICA_DATA.String(), node.postReplicaDataV2)
 
 	// V1_DATA_REPLICATION
 	router.GET(apiclient.V1_SNAPSHOT_STREAM.String(), node.getSnapshotStream)
@@ -419,6 +423,13 @@ func (n *Node) handleBootstrapping() {
 		slog.Error("error in requesting replica", "err", err)
 		return
 	}
+
+	// getLatest := func(e []types.StoreEntry) types.StoreEntry {
+	// 	slices.SortFunc(e, func(a, b types.StoreEntry) int {
+	// 		return int(a.Version - b.Version)
+	// 	})
+	// 	return e[len(e)-1]
+	// }
 	slog.Info("consuming replication stream")
 	for ch := range streamCh {
 		switch ch.EType {
@@ -583,6 +594,43 @@ func (n *Node) postReplicaData(c *gin.Context) {
 
 }
 
+// postReplicaData
+func (n *Node) postReplicaDataV2(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctx, span := tracer.Start(ctx, "postReplicaDataV2")
+	defer span.End()
+
+	body := types.HandlePostRawReqV2{}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, types.PostRawDataResponseV2{
+			Message: "something wrong with body",
+			Err:     err.Error(),
+		})
+		return
+	}
+	valueBytes, err := json.Marshal(body.Value)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, types.PostRawDataResponseV2{
+			Message: "err marshal value to []byte",
+			Err:     err.Error(),
+		})
+		return
+	}
+	err = lsmstorage.PutRaw(ctx, body.Key, valueBytes, body.Version, true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.PostRawDataResponseV2{
+			Err:     err.Error(),
+			Message: "error while putting raw val in store",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, types.PostRawDataResponseV2{
+		IsSuccess: true,
+		Message:   "OK",
+	})
+
+}
+
 // postData
 // finds the owner node of key and store value against the key in that node.
 // value can be any type. Number of available nodes in the cluster must be
@@ -731,17 +779,6 @@ func (n *Node) postData(c *gin.Context) {
 			"redirected":  "true",
 		}
 
-		// valueBytes, err := json.Marshal(value)
-		// if err != nil {
-		// 	c.JSON(http.StatusBadRequest, types.PostDataResponse{
-		// 		Message: "err marshalling value to []byte",
-		// 		Err:     err.Error(),
-		// 		Metadata: &types.PostAndGetDataMetaData{
-		// 			Mislaneous: mislaneous,
-		// 		},
-		// 	})
-		// 	return
-		// }
 		rerr := apiclient.PostKeyValue(ctx, *ownerNode, key, value, queryParams)
 		if rerr != nil {
 			c.JSON(http.StatusInternalServerError, types.PostDataResponse{
@@ -835,6 +872,297 @@ func (n *Node) postData(c *gin.Context) {
 	replicas := ownerAndReplicas[1:]
 	f := func(ctx context.Context, n types.NodeGossip) (*types.NodeGossip, error) {
 		return &n, apiclient.PostRawKeyValue(ctx, n, key, value, newVersion)
+	}
+	// slog.With("ownerAndReplicas", ownerAndReplicas).
+	// 	With("ar", ar).
+	// 	With("gossip", n.GossipV2.Read()).
+	// 	Info("calling post replica data")
+
+	ctx, fanoutSpan := tracer.Start(ctx, "fanning out")
+	res := helper.RunUntilMinSuccessOrTimeout(ctx, f, replicas, writequorumInt, WRITE_CONFIRMATION_TIMEOUT)
+	fanoutSpan.End()
+	count := 0
+	for _, r := range res {
+		if r.E == nil {
+			count++
+		}
+	}
+
+	// if slices.Contains(includeSlice, "res") {
+	// 	mislaneous["res"] = res
+	// 	mislaneous["trace"] = span.SpanContext().TraceID().String()
+	// }
+
+	c.JSON(http.StatusOK, types.PostDataResponse{
+		IsSuccess: true,
+		Message:   "OK",
+		Metadata: &types.PostAndGetDataMetaData{
+			Redirected:   true,
+			ServicedBy:   n.Id,
+			OwnedBy:      ownerNode.Id,
+			ReplicaCount: count,
+			Mislaneous:   mislaneous,
+		},
+	})
+
+}
+
+// postDataV2
+// for lsmstorag
+// finds the owner node of key and store value against the key in that node.
+// value can be any type. Number of available nodes in the cluster must be
+// atleast REPLICA_COUNT+1 for writes to be accepted. Writes are atempted to
+// be replicated to all replica nodes. However, confirmation is awated for
+// only WRITE_QUORUM number of nodes. Confirmation from replica nodes are
+// awaited for duration WRITE_CONFIRMATION_TIMEOUT. Data is always written
+// to owner node first, then replicated to replica nodes. Replica nodes store
+// the key, value & version pair as is with no modifications.
+//
+// # Known Issues
+// if at this time, the write to replica node fails for any reason, there
+// exist no mechanism to replica to get the value. That is sync is not present.
+// I have few thoughts in mind how this can be achieved, but that is for later
+// time.
+//
+// # Query Params
+// writequorum: valid values in [-inf to ReplicaCount]. writequorum is number
+// replicas which must confirm write for write to be confirmed success within
+// WRITE_CONFIRMATION_TIMEOUT duration.
+//   - Negative values means all REPLICAS must confirm write. Owner node is
+//     always required to confirm the write. if for any reason owner node fails
+//     the write the request is failed and not replicated to replicas
+//   - 0 means, no REPLCIA need to confirm the write.
+//   - 1 or more means those many number of REPLICA need to confirm the write
+//
+// include: comma separated list of strings. This is used to return additional
+// metadata in the response. Mainly added this for debugging purpose. Presently
+// support values are "res". This return the result from replica nodes in the
+// response metadata
+func (n *Node) postDataV2(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctx, span := tracer.Start(ctx, "Post Data Handler V2")
+	defer span.End()
+
+	// prepare metadata for response
+	includeQueryParameter := c.Query("include")
+	includeSlice := strings.Split(includeQueryParameter, ",")
+
+	// init mislaneous
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "trace") {
+		mislaneous["trace"] = span.SpanContext().TraceID().String()
+	}
+
+	body := map[string]interface{}{}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		span.AddEvent("bad request")
+		c.JSON(http.StatusBadRequest, types.PostDataResponse{
+			Message: "something wrong with body",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	key := body["key"].(string)
+	value := body["value"]
+
+	writequorum := c.Query("writequorum")
+	slog.With("supplied_write_quorum", writequorum).Info("")
+	if strings.TrimSpace(writequorum) == "" {
+		writequorum = GetDefaultWriteQuorum()
+		slog.With("updated_write_quorum", writequorum).Info("")
+	}
+
+	// WriteQuorum
+	// for WriteQuorum < 0, all nodes must return confirmation
+	// for WriteQuorum > 0, then provided number of nodes are awaited
+	// before write is confirmed up until timout
+	writequorumInt := 0
+	v, err := strconv.Atoi(writequorum)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, types.PostDataResponse{
+			Err:     err.Error(),
+			Message: "writequorum must be valid int",
+		})
+		return
+	}
+
+	if v < 0 {
+		writequorumInt = GVar_ReplicaCount
+	} else {
+		writequorumInt = v
+	}
+
+	if writequorumInt < -1 || writequorumInt > GVar_ReplicaCount {
+		span.AddEvent("bad writequorum")
+		c.JSON(http.StatusBadRequest, types.GetDataResponse{
+			Message: "valid value for writequorum lies between -1 and REPLICA_COUNT",
+			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	span.SetAttributes(attribute.Int("writequorum", writequorumInt))
+
+	ar := helper.MapToArr(n.GossipV2.Read())
+	sort.Slice(ar, func(a, b int) bool {
+		// increasing order in EndOfKeyRange
+		return ar[a].EndOfKeyRange < ar[b].EndOfKeyRange
+	})
+
+	token := helper.HashKey(key, TOTAL_SLOTS)
+	ownerNode, err := helper.GetNode(ar, token)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Err:     err.Error(),
+			Message: "err while getting owner node",
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	span.SetAttributes(
+		attribute.String("currentNode", n.Id),
+		attribute.String("currentHost", n.Host),
+		attribute.String("ownerNodeId", ownerNode.Id),
+		attribute.String("ownerNodeHost", ownerNode.Host),
+		attribute.String("key", key),
+	)
+
+	// slog.With("current_node", n.Id).
+	// 	With("owner_node", ownerNode.Id).
+	// 	With("key", key).
+	// 	With("token", token).
+	// 	With("gossips", n.GossipV2.Read()).
+	// 	Info("owner node details")
+
+	// is someother node own the key
+	// get data from it
+	span.SetAttributes(
+		attribute.Bool("is_owner_node", ownerNode.Id == n.Id),
+	)
+
+	if ownerNode.Id != n.Id {
+		span.AddEvent("redirect to ownernode")
+		queryParams := map[string]string{
+			"writequorum": writequorum,
+			"redirected":  "true",
+		}
+
+		rerr := apiclient.PostKeyValueV2(ctx, *ownerNode, key, value, queryParams)
+		if rerr != nil {
+			c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+				Message: "err posting value to owner node",
+				Err:     rerr.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, types.PostDataResponse{
+			IsSuccess: true,
+			Message:   "OK",
+			Metadata: &types.PostAndGetDataMetaData{
+				Redirected: true,
+				ServicedBy: n.Id,
+				OwnedBy:    ownerNode.Id,
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	span.SetAttributes(
+		attribute.Int("available_gossip_nodes", n.GossipV2.NumNodeInState(types.AVAILABLE)),
+		attribute.Int("all_gossip_nodes", n.GossipV2.Size()),
+	)
+	// send request to next replicacount number of nodes
+	// wait for only REPLICA_COUNT number of nodes
+	// if number of available nodes in the cluster
+	// are less then REPLICA_COUNT then fail the write
+	if n.GossipV2.NumNodeInState(types.AVAILABLE) < GVar_ReplicaCount {
+		span.AddEvent("not enough nodes in cluster")
+		c.JSON(http.StatusFailedDependency, types.PostDataResponse{
+			Err:     pkgerr.ErrNotEnoughNodes.Error(),
+			Message: "available nodes in cluster should be atleast equal to replicacount",
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	valueBytes, err := json.Marshal(value)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, types.PostDataResponse{
+			Message: "err in marshaling value to []byte",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+	}
+
+	// current node own the key range
+	// store in the databaase, additionally, if there is node
+	// with EndOfKeyRange just less than curr node.EndOfKeyRange
+	// and State == BootStrapping then this write needs to be replicated there.
+	// Later on I'll check whether this can be achieved by raft algo
+	span.AddEvent("persisting key val to curr store")
+	ctx, storeOwnerNodeSpan := tracer.Start(ctx, "Storing in owner node")
+
+	// newVersion, err := storagev2.Put(key, value)
+	newVersion, err := lsmstorage.Put(ctx, key, valueBytes)
+	if err != nil {
+		storeOwnerNodeSpan.End()
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Message: "error in writing value to owner node, write not replicated to replicas",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+	storeOwnerNodeSpan.End()
+	span.AddEvent("persisted key val to curr store")
+
+	// get owner-node and next replicacount number of nodes
+	ctx, nNodeSpan := tracer.Start(ctx, "getting N nodes")
+	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount+1) // +1 for owner node
+	if err != nil {
+		nNodeSpan.End()
+		span.AddEvent("err in getting owner & replicas")
+		slog.With("err", err).Error("err in fetching replicas")
+		c.JSON(http.StatusInternalServerError, types.PostDataResponse{
+			Message: "err in fetching replicas",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+	nNodeSpan.End()
+	span.AddEvent("received owners and replicas")
+	span.SetAttributes(
+		attribute.Int("num_owner_and_replicas", len(ownerAndReplicas)),
+	)
+
+	// owner := ownerAndReplicas[0]
+	replicas := ownerAndReplicas[1:]
+	f := func(ctx context.Context, n types.NodeGossip) (*types.NodeGossip, error) {
+		return &n, apiclient.PostRawKeyValueV2(ctx, n, key, value, newVersion)
 	}
 	// slog.With("ownerAndReplicas", ownerAndReplicas).
 	// 	With("ar", ar).
@@ -1086,6 +1414,249 @@ func (n *Node) getData(c *gin.Context) {
 		Message:   "OK",
 		Value:     latestVal,
 		Version:   uint64(latestVersion),
+		Metadata: &types.PostAndGetDataMetaData{
+			Redirected:   true,
+			ServicedBy:   n.Id,
+			OwnedBy:      ownerNode.Id,
+			ReplicaCount: count,
+			Mislaneous:   mislaneous,
+		},
+	})
+
+}
+
+// getDataV2
+// for lsmstorage
+// key: the term to be searched. Any valid string.
+// readquorum: valid ranges from [-1, REPLICA_COUNT). For -1, value
+// is directly fetched from owner-node. For 0, the value is fetched
+// from current node, weather the current node is owner-node,
+// replica-node or any other node. It is possible the request
+// is received by current node which may not have the key-value
+// or any of its replica. For readquorum value N > 0, the value is
+// fetched from N replica nodes, and value corresponding to latest
+// version is returned.
+func (n *Node) getDataV2(c *gin.Context) {
+	ctx := c.Request.Context()
+	ctx, span := tracer.Start(ctx, "Get Data Handler V2")
+	defer span.End()
+
+	key := c.Query("key")
+	readquorum := c.Query("readquorum")
+	if strings.TrimSpace(readquorum) == "" {
+		readquorum = GetDefaultReadQuorum()
+		span.AddEvent("using default readquorum")
+	}
+	span.SetAttributes(
+		attribute.String("readquorum", readquorum),
+	)
+
+	includeQueryParameter := c.Query("include")
+	includeSlice := strings.Split(includeQueryParameter, ",")
+	// init mislaneous
+	mislaneous := map[string]interface{}{}
+	if slices.Contains(includeSlice, "trace") {
+		mislaneous["trace"] = span.SpanContext().TraceID().String()
+	}
+
+	readquorumInt, err := strconv.Atoi(readquorum)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, types.GetDataResponseV2{
+			Message: "readquorum must be valid int",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	// readQuorum must be within [-1, REPLICA_COUNT]
+	if readquorumInt < -1 || readquorumInt > GVar_ReplicaCount {
+		span.RecordError(pkgerr.ErrInvalidReadQuorumValue)
+		span.AddEvent("invalid readquorum")
+		c.JSON(http.StatusBadRequest, types.GetDataResponseV2{
+			Message: "valid value for readquorum lies between -1 and REPLICA_COUNT",
+			Err:     pkgerr.ErrInvalidReadQuorumValue.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	slog.With("key", key).With("readquorum", readquorumInt).Info("get data")
+
+	ctx, findOwnerAndReplicaSpan := tracer.Start(ctx, "Find Owner And Replica Nodes")
+	ar := helper.MapToArr(n.GossipV2.Read())
+	helper.SortNodeInPlace(ar)
+	token := helper.HashKey(key, TOTAL_SLOTS)
+	ownerAndReplicas, err := helper.GetNNode(ar, token, GVar_ReplicaCount+1) // +1 for owner
+	findOwnerAndReplicaSpan.End()
+
+	slog.With("numOwnerAndReplicas", len(ownerAndReplicas)).
+		With("ownerAndReplicas", ownerAndReplicas).
+		Info("")
+	if err != nil {
+		slog.With("err", err).Error("err in fetching replicas")
+		c.JSON(http.StatusInternalServerError, types.GetDataResponseV2{
+			Message: "err in fetching replicas",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+
+	ownerNode := ownerAndReplicas[0]
+	replicas := ownerAndReplicas[1:]
+
+	// if request lands on owner node, directly serve the data
+	// or if readQuorum is 0, that means read data from present node it self
+	span.SetAttributes(attribute.Bool("is_owner_node", n.Id == ownerNode.Id))
+	if n.Id == ownerNode.Id || readquorumInt == 0 {
+		ctx, ownerNodeSpan := tracer.Start(ctx, "Handling In Curr Node")
+		defer ownerNodeSpan.End()
+
+		valBytes, version, err := lsmstorage.Get(ctx, key)
+		if err != nil {
+			span.RecordError(err)
+			span.AddEvent("error getting value from store")
+			c.JSON(http.StatusInternalServerError, types.GetDataResponseV2{
+				Message: "error getting value from store",
+				Err:     err.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
+			})
+			return
+		}
+
+		var valueUnmarshal interface{}
+		err = json.Unmarshal(valBytes, &valueUnmarshal)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, types.GetDataResponseV2{
+				Message: "err unmarshaling value from []byte to interface{}",
+				Err:     err.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, types.GetDataResponseV2{
+			IsSuccess: true,
+			Message:   "OK",
+			Value:     valueUnmarshal,
+			Version:   *version,
+			Metadata: &types.PostAndGetDataMetaData{
+				Redirected:   false,
+				ServicedBy:   n.Id,
+				OwnedBy:      ownerNode.Id,
+				ReplicaCount: 1,
+				Mislaneous:   mislaneous,
+			},
+		})
+		return
+	}
+
+	// if replicacount <=0, then fetch from owner node
+	if readquorumInt < 0 {
+		ctx, ownerNodeSpan := tracer.Start(ctx, "Fetch From Owner Node")
+		defer ownerNodeSpan.End()
+		params := map[string]string{
+			"key":        key,
+			"readquorum": readquorum,
+		}
+		respBody, rerr := apiclient.GetKeyValueV2(ctx, ownerNode, params)
+		if rerr != nil {
+			span.RecordError(rerr)
+			span.AddEvent("error getting value owner node")
+			c.JSON(http.StatusInternalServerError, types.GetDataResponse{
+				Message: "error getting value owner node",
+				Err:     rerr.Error(),
+				Metadata: &types.PostAndGetDataMetaData{
+					Mislaneous: mislaneous,
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, types.GetDataResponseV2{
+			IsSuccess: true,
+			Value:     respBody.Value,
+			Version:   respBody.Version,
+			Message:   "OK",
+			Metadata: &types.PostAndGetDataMetaData{
+				Redirected:   true,
+				OwnedBy:      ownerNode.Id,
+				ServicedBy:   n.Id,
+				ReplicaCount: 1,
+				Mislaneous:   mislaneous,
+			},
+		})
+
+		return
+	}
+
+	// for readquorum of N > 0, then get value from exactly
+	// N number of nodes and return the latest version
+	ctx, ReadFromReplicaSpan := tracer.Start(ctx, "Read From Replica")
+	randomReplica := helper.PickNRandom(replicas, readquorumInt)
+	fn := func(ctx context.Context, n types.NodeGossip) (*types.GetDataResponseV2, error) {
+		params := map[string]string{
+			"key":        key,
+			"readquorum": "0",
+		}
+		return apiclient.GetKeyValueV2(ctx, n, params)
+	}
+	slog.With("random_replica", randomReplica).
+		With("replicas", replicas).
+		Info("key replicas")
+	res := helper.RunUntilMinSuccessOrTimeout(ctx, fn, randomReplica, len(randomReplica), READ_CONFIRMATION_TIMEOUT)
+
+	var latestVersion types.Version = types.NegInf
+	var latestValue interface{}
+
+	for _, r := range res {
+		if r.R != nil {
+			currVersion := r.R.Version
+			if currVersion.Cmp(latestVersion) > 0 {
+				latestVersion = currVersion
+				latestValue = r.R.Value
+			}
+		}
+	}
+	ReadFromReplicaSpan.End()
+
+	count := 0
+	for _, r := range res {
+		if r.E == nil {
+			count++
+		}
+	}
+
+	if slices.Contains(includeSlice, "res") {
+		mislaneous["res"] = res
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, types.GetDataResponseV2{
+			Message: "err unmarshaling []bytet to value",
+			Err:     err.Error(),
+			Metadata: &types.PostAndGetDataMetaData{
+				Mislaneous: mislaneous,
+			},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, types.GetDataResponseV2{
+		IsSuccess: true,
+		Message:   "OK",
+		Value:     latestValue,
+		Version:   latestVersion,
 		Metadata: &types.PostAndGetDataMetaData{
 			Redirected:   true,
 			ServicedBy:   n.Id,

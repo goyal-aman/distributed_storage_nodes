@@ -1,4 +1,4 @@
-package types
+package typesv2
 
 import (
 	"fmt"
@@ -152,12 +152,6 @@ type HandlePostRawReqV2 struct {
 	Version Version
 }
 
-type HandlePostRawReq struct {
-	Key     string
-	Value   interface{}
-	Version uint64
-}
-
 type Endpoint string
 
 func (e Endpoint) String() string {
@@ -174,13 +168,6 @@ type PostAndGetDataMetaData struct {
 }
 
 type PostDataResponse struct {
-	IsSuccess bool                    `json:"status"`
-	Message   string                  `json:"message,omitempty"`
-	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
-	Err       string                  `json:"error,omitempty"`
-}
-
-type PostRawDataResponseV2 struct {
 	IsSuccess bool                    `json:"status"`
 	Message   string                  `json:"message,omitempty"`
 	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
@@ -204,54 +191,16 @@ type HasState interface {
 
 type GetDataResponseV2 struct {
 	IsSuccess bool                    `json:"status"`
-	Value     interface{}             `json:"value"`
-	Version   Version                 `json:"version"`
-	Message   string                  `json:"message,omitempty"`
-	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
-	Err       string                  `json:"error,omitempty"`
-}
-
-type GetDataResponse struct {
-	IsSuccess bool                    `json:"status"`
-	Value     interface{}             `json:"value"`
+	Value     []byte                  `json:"value"`
 	Version   uint64                  `json:"version"`
 	Message   string                  `json:"message,omitempty"`
 	Metadata  *PostAndGetDataMetaData `json:"metadata,omitempty"`
 	Err       string                  `json:"error,omitempty"`
 }
 
-var (
-	NegInf Version = Version{}
-	PosInf Version = Version{}
-)
-
 type Version struct {
 	// TimestampEpochUtcInSec
 	// epoch with precision of seconds in UTC timezone
 	TimestampEpochUtcInSec int64
 	Count                  uint64
-}
-
-func (v Version) Cmp(o Version) int {
-	if o == NegInf {
-		return 1
-	}
-
-	if o == PosInf {
-		return -1
-	}
-
-	if v.TimestampEpochUtcInSec == o.TimestampEpochUtcInSec {
-		if v.Count < o.Count {
-			return -1
-		} else if v.Count > o.Count {
-			return 1
-		} else {
-			return 0
-		}
-	} else if v.TimestampEpochUtcInSec < o.TimestampEpochUtcInSec {
-		return -1
-	} else {
-		return 1
-	}
 }

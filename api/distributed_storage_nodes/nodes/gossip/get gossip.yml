@@ -8,7 +8,7 @@ http:
   url: http://localhost:7770/v1/gossip
   body:
     type: json
-    data: "\n\n"
+    data: "\n"
   auth: inherit
 
 settings:

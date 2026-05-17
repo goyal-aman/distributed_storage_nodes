@@ -71,8 +71,12 @@ type LSMTree struct {
 	inMemStore map[string]types.StoreEntryV2
 }
 
-func NewLSMTree(logPath string) (ILSMTree, error) {
-	commitLog, err := commitlog.NewCommitLog(logPath)
+func NewLSMTree(
+	logPathPrefix string,
+	fileNameSuffix string,
+) (ILSMTree, error) {
+	fileName := fmt.Sprintf("%s/commit_log%s.log", logPathPrefix, fileNameSuffix)
+	commitLog, err := commitlog.NewCommitLog(fileName)
 	if err != nil {
 		return nil, err
 	}

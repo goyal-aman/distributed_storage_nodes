@@ -1,11 +1,11 @@
 info:
-  name: key value
+  name: key value v2
   type: http
-  seq: 2
+  seq: 3
 
 http:
   method: POST
-  url: http://localhost:7771/v1/data?writequorum=-1&include=res,trace
+  url: http://localhost:7771/v2/data?writequorum=-1&include=res,trace
   params:
     - name: writequorum
       value: "-1"
@@ -17,48 +17,13 @@ http:
     type: json
     data: |+
       {
-        
         "key": "1",
-        
-        "value": {"name":"a", "key":1, "value":null}
-        
-        
+        "value": {
+          "name": "b",
+          "key": 1,
+          "value": "asdfasdf"
+        }
       }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

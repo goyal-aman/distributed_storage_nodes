@@ -10,6 +10,8 @@ node4:
 	go run nodes/main.go -port=7774 -eokr=3689348814741910528 -host=http://0.0.0.0:7774 -seed=http://0.0.0.0:7770
 test:
 	go test -v ./...
+resetlog:
+	rm -rf ./commitlog_logpath/*.log
 # no longer needed, cluster is removed
 # node1:
 # 	go run nodes/main.go -port=7771

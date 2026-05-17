@@ -5,7 +5,7 @@ info:
 
 http:
   method: GET
-  url: http://localhost:7771/v1/snapshot
+  url: http://localhost:7772/v1/snapshot
   auth: inherit
 
 settings:
