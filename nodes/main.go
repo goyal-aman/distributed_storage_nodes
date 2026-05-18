@@ -55,6 +55,7 @@ var (
 var (
 	fPort          = flag.Int("port", 7770, "port of application, default is 7770")
 	fHost          = flag.String("host", "", "host addr of current node. this is mandatory. example 'http://0.0.0.0:7770'")
+	fNodeId        = flag.String("nodeid", "", "node id which is used to identify a node uniquely in cluster, if nodeid is not provided then a new id is generated used uuid")
 	fEndOfKeyRange = flag.String("eokr", "", "EndOfKeyRange for the node. this is mandatory. '18446744073709551615' is max value")
 	fSeedNodes     = flag.String("seed", "", "comma separated host details of seed node, default is ''; example 'http://0.0.0.0:8080,http://0.0.0.0:8081'")
 
@@ -67,6 +68,16 @@ var (
 		"logpathprefix", "./commitlog_logpath",
 		"this is log path prefix for commitlog. For example './commitlog/goes/here'",
 	)
+
+	fMetadataDbPath = flag.String(
+		"metadatadbpath", "./metadatadb_runtime",
+		"this is db path for node's metadata. For example './db/goes/here'",
+	)
+
+	fMetadataDbName = flag.String(
+		"metadatadbname", "lsmtreemetadata",
+		"this is db name for node's metadatadb. For example 'lsmtreemetadata'",
+	)
 )
 
 var (
@@ -74,11 +85,13 @@ var (
 	GVar_NodeID string
 
 	// GVar_Host is host address of current node where other nodes will contact on
-	GVar_Host          string
-	GVar_SeedNodes     []string
-	GVar_ReplicaCount  int
-	GVar_EndOfKeyRange uint64
-	GVar_LogPathPrefix string
+	GVar_Host           string
+	GVar_SeedNodes      []string
+	GVar_ReplicaCount   int
+	GVar_EndOfKeyRange  uint64
+	GVar_LogPathPrefix  string
+	GVar_MetadataDbPath string
+	GVar_MetadataDbName string
 )
 
 var (
@@ -92,7 +105,10 @@ func init() {
 	GVar_PORT = *fPort
 
 	// handle node Id
-	GVar_NodeID = uuid.New().String()
+	GVar_NodeID = *fNodeId
+	if GVar_NodeID == "" {
+		GVar_NodeID = uuid.New().String()
+	}
 
 	// handle host
 	if fHost == nil || len(*fHost) == 0 {
@@ -152,12 +168,29 @@ func init() {
 	// logPathPrefix
 	GVar_LogPathPrefix = *fLogPathPrefix
 
+	// metadatadb path
+	GVar_MetadataDbPath = *fMetadataDbPath
+
+	// metadatadb name
+	GVar_MetadataDbName = *fMetadataDbName
+
 	// init storage
 	// logPath := fmt.Sprintf("./%s_commit.log", GVar_NodeID)
 	storagev2 = store.NewDataStore()
 
+	const (
+		DB_NAME = "lsmtree"
+		DB_PATH = "../db"
+	)
+
 	// init lsmtree
-	if lsmtree, err := lsmtree.NewLSMTree(GVar_LogPathPrefix, GVar_NodeID); err != nil {
+	if lsmtree, err := lsmtree.NewLSMTree(
+		context.Background(), // TODO figure out context here
+		GVar_LogPathPrefix,
+		GVar_NodeID,
+		GVar_MetadataDbPath,
+		fmt.Sprintf("%s_%s", GVar_MetadataDbName, GVar_NodeID),
+	); err != nil {
 		slog.Error("error creating LSMTreee", "err", err)
 		os.Exit(1)
 	} else {

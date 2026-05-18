@@ -45,6 +45,22 @@
                 "-seed=http://0.0.0.0:7770"
             ],
             "cwd": "${workspaceFolder}"
+        },
+        {
+            //-port=7772 -eokr=9223372036854775808 -host=http://0.0.0.0:7772 -seed=http://0.0.0.0:7770
+            "name": "debug node4",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/nodes",
+            "args": [
+                "-port=7772",
+                "-nodeid=e",
+                "-eokr=9223372036854775808",
+                "-host=http://0.0.0.0:7772",
+                "-seed=http://0.0.0.0:7770"
+            ],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

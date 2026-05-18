@@ -28,7 +28,7 @@ func TestCommitLog_NewCommitLog(t *testing.T) {
 			tempdir := t.TempDir()
 			commitLogPath := tempdir + "/commitlog_test.log"
 
-			_, err := commitlog.NewCommitLog(commitLogPath)
+			_, err := commitlog.GetOrCreateCommitLog(commitLogPath)
 			if err != test.expectErr {
 				t.Errorf("NewCommitLog returned %s while expected %s", err, test.expectErr)
 			}
@@ -80,13 +80,13 @@ func TestCommitLog_Write(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			tempdir := t.TempDir()
 			commitLogPath := tempdir + "/commitlog_test.log"
-			commitLog, err := commitlog.NewCommitLog(commitLogPath)
+			commitLog, err := commitlog.GetOrCreateCommitLog(commitLogPath)
 			if err != nil {
 				t.Errorf("received unexpected error while creating commitlog: %s", err.Error())
 			}
 
 			for _, item := range test.LogItems {
-				writeErr := commitLog.Write(context.Background(), item.Version, item.Key, item.Value)
+				writeErr := commitLog.Write(context.Background(), item.Version, item.Key, item.Value, item.IsReplica)
 				if test.expectWriteErr != writeErr {
 					t.Errorf("mismatch: received write err: %s, expected write err: %s", writeErr.Error(), test.expectWriteErr.Error())
 				}

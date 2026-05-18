@@ -2,10 +2,14 @@ package lsmtree
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/goyal-aman/distributed-storage-nodes/commitlog"
+	"github.com/goyal-aman/distributed-storage-nodes/lsmtree/metadatadb"
+	"github.com/goyal-aman/distributed-storage-nodes/lsmtree/sqlitedb"
 	"github.com/goyal-aman/distributed-storage-nodes/sequencegenerator"
 	"github.com/goyal-aman/distributed-storage-nodes/store"
 	"github.com/goyal-aman/distributed-storage-nodes/types"
@@ -69,23 +73,112 @@ type LSMTree struct {
 	// not given much though on GC of old version.
 	// Most recent verions are always stored in end of slice
 	inMemStore map[string]types.StoreEntryV2
+
+	// db
+	metadataDb metadatadb.IMetadataDB
 }
 
 func NewLSMTree(
+	ctx context.Context,
 	logPathPrefix string,
 	fileNameSuffix string,
+	metadataDbPath string,
+	dbName string,
 ) (ILSMTree, error) {
-	fileName := fmt.Sprintf("%s/commit_log%s.log", logPathPrefix, fileNameSuffix)
-	commitLog, err := commitlog.NewCommitLog(fileName)
+
+	// get or create commitlog.
+	metadataDb, err := metadatadb.NewMetadataDB(metadataDbPath, dbName)
 	if err != nil {
 		return nil, err
+	}
+
+	commitLogRows, err := metadataDb.GetLiveCommitLog(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var commitLog commitlog.ICommitLog
+	if len(commitLogRows) == 0 {
+		commitLogPath := fmt.Sprintf("%s/commitlog_%s.log", logPathPrefix, fileNameSuffix)
+		commitLog, err = commitlog.GetOrCreateCommitLog(commitLogPath)
+		if err != nil {
+			return nil, err
+		}
+		metadataDb.InsertCommitLog(ctx, commitLogPath, "LIVE")
+		slog.With("commitLogPath", commitLogPath).Info("added new commitlog to metadatadb")
+	} else {
+		existingCommitLog := commitLogRows[0]
+		commitLogPath := existingCommitLog.Name
+		commitLog, err = commitlog.GetOrCreateCommitLog(commitLogPath)
+		if err != nil {
+			return nil, err
+		}
+		slog.With("commitLogPath", commitLogPath).Info("reinitlaised commitlog from metadatadb")
+	}
+
+	inMemStore, err := CommitLogToInMemStore(commitLog)
+	if err != nil {
+		return nil, err
+	}
+	if len(inMemStore) > 0 {
+		slog.With("read_values", len(inMemStore)).Info("reinitialised inmemstore")
 	}
 
 	return &LSMTree{
 		seqGenerator: sequencegenerator.NewAtomicCounter(),
 		commitLog:    commitLog,
-		inMemStore:   make(map[string]types.StoreEntryV2),
+		inMemStore:   inMemStore,
+		metadataDb:   metadataDb,
 	}, nil
+}
+
+func CommitLogToInMemStore(commitLog commitlog.ICommitLog) (map[string]types.StoreEntryV2, error) {
+	items, err := commitLog.Replay()
+	if err != nil {
+		return nil, err
+	}
+
+	inMemStore := make(map[string]types.StoreEntryV2)
+	for _, item := range items {
+		inMemStore[item.Key] = types.StoreEntryV2{
+			Value:     item.Value,
+			Version:   item.Version,
+			IsReplica: item.IsReplica,
+		}
+	}
+	return inMemStore, nil
+}
+
+func initLSMTreeTables(db *sqlitedb.SqliteDB) error {
+	// create commitlog table
+	createTableStatements := []string{
+		`CREATE TABLE IF NOT EXISTS commitlog (
+        	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        	name TEXT NOT NULL,
+			status TEXT NOT NULL);
+    	`,
+
+		`CREATE TABLE IF NOT EXISTS sstable (
+        	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        	name TEXT NOT NULL,
+			level INTEGER NOT NULL);
+    	`,
+	}
+
+	var createTableErr error
+	for _, createTableStatement := range createTableStatements {
+		_, err := db.Exec(createTableStatement)
+		if createTableErr != nil {
+			createTableErr = errors.Join(createTableErr, err)
+		}
+	}
+
+	if createTableErr != nil {
+		return createTableErr
+	}
+
+	return nil
+
 }
 
 // Get
@@ -140,7 +233,7 @@ func (d *LSMTree) PutRaw(
 	defer span.End()
 
 	d.mu.Lock()
-	err := d.commitLog.Write(ctx, version, key, val)
+	err := d.commitLog.Write(ctx, version, key, val, isReplica)
 	if err != nil {
 		return fmt.Errorf("error writting to commitlog: %w", err)
 	}

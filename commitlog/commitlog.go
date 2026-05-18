@@ -16,7 +16,7 @@ import (
 )
 
 type ICommitLog interface {
-	Write(ctx context.Context, version types.Version, key string, value []byte) error
+	Write(ctx context.Context, version types.Version, key string, value []byte, isReplica bool) error
 	Replay() ([]lsmtreetype.LogItem, error)
 }
 
@@ -28,10 +28,10 @@ type CommitLog struct {
 	logFileDesc *os.File
 }
 
-// NewCommitLog
+// GetOrCreateCommitLog
 // logPath: complete path of the logfile with name and ext of file
 // for example: a/b/c/commit.log
-func NewCommitLog(logPath string) (ICommitLog, error) {
+func GetOrCreateCommitLog(logPath string) (ICommitLog, error) {
 	// O_CREATE: create if not there, O_RDWR: read/write, O_APPEND: append mode
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
 	if err != nil {
@@ -49,9 +49,9 @@ func NewCommitLog(logPath string) (ICommitLog, error) {
 // ideally the data is written in following format
 // format: <keyLen_32bits><Key>[version<timestamp_64bit_int><count_64bit_uint>]<valLen><val><crc_32_bit>
 // but initially I am writting in human readable format.
-// human readable format: "<key> <value> <timestamp> <count> <crc>"
-func (c *CommitLog) Write(ctx context.Context, version types.Version, key string, value []byte) error {
-	logLine := c.toLogLineWithCRC(key, value, version.TimestampEpochUtcInSec, version.Count)
+// human readable format: "<key> <value> <timestamp> <count> <isReplica> <crc>"
+func (c *CommitLog) Write(ctx context.Context, version types.Version, key string, value []byte, isReplica bool) error {
+	logLine := c.toLogLineWithCRC(key, value, version.TimestampEpochUtcInSec, version.Count, isReplica)
 	slog.Debug("written logline: ", slog.String("log_line", logLine))
 	if _, err := c.logFileDesc.Write([]byte(logLine)); err != nil {
 		return fmt.Errorf("error writting to commitlog: %w", err)
@@ -59,15 +59,15 @@ func (c *CommitLog) Write(ctx context.Context, version types.Version, key string
 	return nil
 }
 
-func (c *CommitLog) toLogLineWithCRC(key string, value []byte, timestamp int64, count uint64) string {
-	loglineFH := c.toLogLine(key, value, timestamp, count)
+func (c *CommitLog) toLogLineWithCRC(key string, value []byte, timestamp int64, count uint64, isReplia bool) string {
+	loglineFH := c.toLogLine(key, value, timestamp, count, isReplia)
 	checksum := c.checkSum(loglineFH)
 	logLine := fmt.Sprintf("%s %d\n", loglineFH, checksum)
 	return logLine
 }
 
-func (c *CommitLog) toLogLine(key string, value []byte, timestamp int64, count uint64) string {
-	return fmt.Sprintf("%s %s %d %d", key, string(value), timestamp, count)
+func (c *CommitLog) toLogLine(key string, value []byte, timestamp int64, count uint64, isReplica bool) string {
+	return fmt.Sprintf("%s %s %d %d %t", key, string(value), timestamp, count, isReplica)
 }
 
 func (c *CommitLog) checkSum(s string) uint32 {
@@ -106,7 +106,7 @@ func (c *CommitLog) readHumanReadableCommitLog() ([]lsmtreetype.LogItem, error) 
 
 		items := strings.Split(line, " ")
 
-		key, valueStr, timestampStr, countStr, checkSumStr := items[0], items[1], items[2], items[3], items[4]
+		key, valueStr, timestampStr, countStr, isReplicaStr, checkSumStr := items[0], items[1], items[2], items[3], items[4], items[5]
 
 		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil {
@@ -122,8 +122,11 @@ func (c *CommitLog) readHumanReadableCommitLog() ([]lsmtreetype.LogItem, error) 
 		if err != nil {
 			return nil, fmt.Errorf("error parsing checkSum str to uint32: %w", err)
 		}
+
+		isReplica := isReplicaStr == "true"
+
 		readCheckSum := uint32(checkSum64)
-		logLine := c.toLogLine(key, []byte(valueStr), timestamp, count)
+		logLine := c.toLogLine(key, []byte(valueStr), timestamp, count, isReplica)
 		calculatedCheckSum := c.checkSum(logLine)
 
 		if readCheckSum != calculatedCheckSum {
@@ -133,8 +136,9 @@ func (c *CommitLog) readHumanReadableCommitLog() ([]lsmtreetype.LogItem, error) 
 		}
 
 		logItems = append(logItems, lsmtreetype.LogItem{
-			Key:   key,
-			Value: []byte(valueStr),
+			Key:       key,
+			Value:     []byte(valueStr),
+			IsReplica: isReplica,
 			Version: types.Version{
 				TimestampEpochUtcInSec: timestamp,
 				Count:                  count,

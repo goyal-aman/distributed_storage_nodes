@@ -15,9 +15,10 @@ type XString interface {
 }
 
 type LogItem struct {
-	Key     string
-	Value   []byte
-	Version types.Version
+	Key       string
+	Value     []byte
+	Version   types.Version
+	IsReplica bool
 }
 
 // XHasOrder
